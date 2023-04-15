@@ -1,0 +1,57 @@
+#+title: Make Myself A Node Editor
+#+author: 凉凉
+* About
+记录一下使用 ClojureScript 和 Reagent 来制作一个节点编辑器的过程.
+方便之后去进行回看代码. 同时也尝试一下在更加复杂的工作环境下,
+使用 org-mode 进行文学编程的可能性.
+
+未来可能会更新到博客里面. (在写了)
+
+(该项目本来应该用在 iGEM 里面的. )
+
+** 可能会使用到的技术栈
++ git (我将尝试使用 [[https://magit.vc][magit]] 来进行辅助)
++ [[https://clojurescript.org][ClojureScript]] (实际上是将 [[https://clojure.org][Clojure]] 编译成 JavaScript 的实现)
++ [[https://reagent-project.github.io][Reagent]], 是 [[https://react.dev][React]] 的 ClojureScript 的绑定
++ [[https://github.com/day8/re-frame][Re-frame]], 一个类似于简化 Reagent 设计的一个框架.
++ [[https://github.com/thheller/shadow-cljs][shadow-cljs]], 用于配置和与 npm 进行沟通
++ [[https://www.electronjs.org][Electron]], 一个类似于将网页作为本地软件的一个框架
+  (如果说难听点, 就是 chromium 内核. )
+
+** 目标和计划
++梦里啥都有...+
+
++ 做一个能够自定义节点类和边类, 自定义节点图标的一个节点编辑器 (Electron)
++ 节点可以执行任意代码作为后端实现, 不是局限于 Clojure (Electron)
+
+* Stage 0
+一个 "你就说它能不能动吧" 的开头.
+
+实际上其中大部分都是些辛苦的体力活, 没什么高级的地方.
+一些约定:
+
+#+begin_src shell
+  > tree . -I "node_modules"
+  .
+  |-- LICENSE                     ; MIT 协议
+  |-- README.org                  ; 本文档
+  |-- package-lock.json
+  |-- package.json                ; npm 配置
+  |-- rescources                  ; 导出的目录
+  |   `-- public
+  |       `-- index.html
+  |-- shadow-cljs.edn             ; shadow-cljs 依赖
+  `-- src
+      `-- app
+          |-- main                ; electron 部分
+          |   `-- core.cljs
+          `-- renderer            ; 页面部分 (主体)
+              |-- core.cljs
+              |-- db.cljs
+              |-- events.cljs
+              |-- subs.cljs
+              `-- view.cljs
+#+end_src
+
+* COMMENT LocalWords
+#  LocalWords: LocalWords magit
