@@ -27,6 +27,8 @@
 * Stage 0
 一个 "你就说它能不能动吧" 的开头.
 
+(可以到本项目的 [[https://github.com/li-yiyang/write-myself-a-node-editor/tree/initialized-the-project][initialized-the-project]] 分支查看)
+
 实际上其中大部分都是些辛苦的体力活, 没什么高级的地方.
 一些约定:
 
@@ -53,5 +55,280 @@
               `-- view.cljs
 #+end_src
 
+* Stage 1 - Models and Views
+** Overview
+在 =app.renderer.core= 的 Namespace 下,
+描述 =start!= 的逻辑:
+
+#+begin_src clojure :tangle src/app/renderer/core.cljs
+  (ns app.renderer.core
+    (:require [reagent.dom         :as reagentdom  :refer [render]]
+              [re-frame.core       :as re-frame    :refer [dispatch-sync]]
+              [app.renderer.view   :as view        :refer [main]]
+              [app.renderer.db     :as db]
+              [app.renderer.subs   :as subs]
+              [app.renderer.events :as events]
+              [devtools.core       :as devtools]
+              ))
+
+  (defn ^:dev/after-load start! "Start Renderer" []
+    (enable-console-print!)               ; for dev usage
+    (devtools/install!)
+    (dispatch-sync [:initialize-db])
+    (render [main] (.getElementById js/document "app-container")))
+#+end_src
+
+其中 =start!= 的逻辑:
++ 为了调试方便, 打开了在游览器终端中输出信息的功能;
++ 初始化数据库;
++ 将 =view/main= 渲染进 id 为 =app-container= 的 HTML 元素中. 
+
+** database and subscription
+在 =app.renderer.db= 的 Namespace 下,
+定义一个 (带有一些示例的) 数据库. 
+
+#+name: stage-1-db
+#+begin_src clojure :tangle src/app/renderer/db.cljs
+  (ns app.renderer.db)
+
+  (def default-db
+    {:nodes     {
+                 :A {
+                     :id    :A
+                     :color :orange
+                     :type  :Number
+                     :pos-x 0
+                     :pos-y 1
+                     :param { :num 1 }
+                     :in    {}
+                     :out   { :val [:C :a] }
+                     }
+                 :B {
+                     :id    :B
+                     :color :orange
+                     :type  :Number
+                     :pos-x 1
+                     :pos-y 1
+                     :param { :num 2 }
+                     :in    {}
+                     :out   { :val [:C :a] }
+                     }
+                 :C {
+                     :id    :C
+                     :color :black
+                     :type  :Add
+                     :pos-x 0
+                     :pos-y 0
+                     :param {}
+                     :in    { :a [:A :val]
+                              :b [:B :val] }
+                     :out   { :val [] }
+                     }
+                 }
+
+     :node-class {
+                  :Number {
+                           :class :Number
+                           :param [ :num ]
+                           :in    []
+                           :out   [ :val ]
+                           :func  (fn [{:keys [num]}] { :val num })
+                           }
+                  :Add    {
+                           :class :Add
+                           :param []
+                           :in    [ :a :b ]
+                           :out   [ :val ]
+                           :func  (fn [{:keys [a b]}] { :val (+ a b) })
+                           }
+                  }})
+#+end_src
+
+说明:
++ 数据库中包含的对象 =nodes= 和 =node-class=
++ 对于每一个 =node=:
+  + =id= 为唯一标识符
+  + =type= 为对应类的标识符
+  + =in= 和 =out= 为通过节点种类决定的信息,
+    使用 =[node-id node-port-name]= 来表示对应点.
+
+使用 =app.renderer.subs= 将数据库中的信息暴露给其他模块调用
+
+#+begin_src clojure :tangle src/app/renderer/subs.cljs
+  (ns app.renderer.subs
+    (:require [re-frame.core :as re-frame :refer [reg-sub]]))
+#+end_src
+
++ =nodes= 使得能够访问所有的节点
+  
+  #+begin_src clojure :tangle src/app/renderer/subs.cljs
+    (reg-sub :nodes (fn [db] (db :nodes)))
+  #+end_src
+
++ =node-class= 使得能够访问所有的节点类
+
+  #+begin_src clojure :tangle src/app/renderer/subs.cljs
+    (reg-sub :node-class (fn [db] (db :node-class)))
+  #+end_src
+
+** view
+在 =app.renderer.view= 的 Namespace 下,
+调用 =reagent=, =re-frame= 的库, 引用:
++ =reagent/atom= 用于使用 =atom= 作为容器存放可记录的数据,
+  在被更改的时候会使得 Reagent 刷新页面.
++ =reagent/cursor= 和 =atom= 作用类似,
+  用于指向数据库中的信息.
++ =re-frame/db= 用于引用数据库
++ =re-frame/dispatch= 用于调用事件
++ =re-frame/subscribe= 用于注册信息
+
+#+name: stage-1-namespace
+#+begin_src clojure :tangle src/app/renderer/view.cljs
+  (ns app.renderer.view
+    (:require [reagent.core  :as reagent  :refer [atom cursor]]
+              [re-frame.core :as re-frame :refer [dispatch subscribe]]))
+#+end_src
+
+*** Main
+#+name: stage-1-main
+#+begin_src clojure :noweb yes :tangle src/app/renderer/view.cljs
+  ;;; Load svg helper
+  <<stage-1-svg-helper>>
+
+  ;;; Function to draw board
+  <<stage-1-draw-board>>
+
+  (defn main "Main View." []
+    [board])
+#+end_src
+
+一些用于绘制 svg 的一些小技巧:
++ 使用 =<g>...</g>= 即 =[:g ...]= 的形式来将 svg 中的元素组合在一起.
++ 与其使用 =x=, =y=, =(* width scale)= 等来设置位置和大小,
+  不如使用 =transform= 即 =[:g {:transform "translate(...)"}]= 这样的形式. 
+
+  #+name: stage-1-svg-helper
+  #+begin_src clojure :tangle no
+    (defn transform [& {:keys [x y s]}]
+      {:transform (str (if (and x y) (str "translate(" x " " y ") ") "")
+                       (if s         (str "scale(" s ")")            ""))})
+  #+end_src
+
+  (于是在使用的时候, 通过 =[:g (transform ...) ...]= 这样的形式就可以快速调用属性了)
+  
+*** Draw Board
+#+name: stage-1-draw-board
+#+begin_src clojure :tangle no
+  (defn board []
+    (let [nodes        (subscribe [:nodes])
+          node-classes (subscribe [:node-class])
+          width        (atom 600)
+          height       (atom 300)
+          tr-x         (atom 0)
+          tr-y         (atom 0)
+          scale        (atom 30)
+          dragging?    (atom false)
+          seleced-id   (atom nil)]
+      (let [resize-artboard (fn [event]
+                              (.stopPropagation event)
+                              (#(reset! scale (max 10 (min % 100)))
+                               (+ (* 0.005 event.deltaY) @scale)))
+            move-artboard   (fn [event]
+                              (.stopPropagation event)
+                              (when @dragging?
+                                (reset! tr-x (+ @tr-x event.movementX))
+                                (reset! tr-y (+ @tr-y event.movementY))))
+            nomove-artboard #(reset! dragging? false)
+            start-move-artb (fn [event]
+                              (.stopPropagation event)
+                              (condp = event.button
+                                0 (reset! dragging? true)
+                                '()))
+            move-node        (fn [id event]
+                               (.stopPropagation event)
+                               (when (= id @seleced-id)
+                                 (dispatch [:move-node id
+                                            (/ event.movementX @scale)
+                                            (/ event.movementY @scale)])))
+            end-move-n       #(reset! seleced-id nil)
+            mouse-dow-n      (fn [id event]
+                               (.stopPropagation event)
+                               (reset! seleced-id id)
+                               (condp = event.button
+                                 2 (println :left-key)
+                                 '()))]
+        (fn []
+          (let [node-width  1
+                node-height 1
+                rx          5]
+            [:svg {:width  @width
+                   :height @height
+                   :style  {:border "3px solid black"}}
+             ;; Artboard mask
+             [:mask#board-background-mask
+              [:rect {:width  @width
+                      :height @height
+                      :fill   :white}]]
+             ;; Artboard
+             [:g {:mask :board-background-mask}
+
+              [:rect
+               {
+                :width  @width
+                :height @height
+                :fill   :white
+                :on-wheel       resize-artboard
+                :on-mouse-move  move-artboard
+                :on-mouse-up    nomove-artboard
+                :on-mouse-leave nomove-artboard
+                :on-mouse-down  start-move-artb}]
+
+              [:g (transform :x @tr-x :y @tr-y :s @scale)
+               (for [[id node] @nodes]
+                 [:g (conj {:key id} (transform :x (node :pos-x) :y (node :pos-y)))
+                  [:rect
+                   {
+                    :width  node-width
+                    :height node-height
+                    :fill   (node :color)
+                    :on-mouse-down  #(mouse-dow-n id %)
+                    :on-mouse-move  #(move-node id %)
+                    :on-mouse-leave end-move-n
+                    :on-mouse-up    end-move-n
+                   }]]
+                 )
+               ]]])))))
+#+end_src
+
+
+** events
+在 =app.renderer.events= Namespace 中定义程序的主要的控制事件:
+
+#+begin_src clojure :tangle src/app/renderer/events.cljs
+  (ns app.renderer.events
+    (:require [re-frame.core   :as re-frame :refer [reg-event-db reg-event-fx]]
+              [app.renderer.db :as database :refer [default-db]]))
+#+end_src
+
++ 初始化数据库
+
+  #+begin_src clojure :tangle src/app/renderer/events.cljs
+    (reg-event-db
+     :initialize-db
+     (fn [_ _] default-db))
+  #+end_src
++ 移动节点
+
+  #+begin_src clojure :tangle src/app/renderer/events.cljs
+    (reg-event-db
+     :move-node
+     (fn [db [_ id dx dy]]
+       (let [x (get-in db [:nodes id :pos-x])
+             y (get-in db [:nodes id :pos-y])]
+        (-> db
+            (assoc-in [:nodes id :pos-x] (+ dx x))
+            (assoc-in [:nodes id :pos-y] (+ dy y))))))
+  #+end_src
+
 * COMMENT LocalWords
-#  LocalWords: LocalWords magit
+#  LocalWords: LocalWords magit svg cljs noweb
