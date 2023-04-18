@@ -84,6 +84,7 @@
 + 将 =view/main= 渲染进 id 为 =app-container= 的 HTML 元素中. 
 
 ** database and subscription
+*** 数据组织形式
 在 =app.renderer.db= 的 Namespace 下,
 定义一个 (带有一些示例的) 数据库. 
 
@@ -96,17 +97,23 @@
      :node-class {
                   :Number {
                            :class :Number
-                           :param [ :num ]
+                           :param {:num 0}
+                           :color :orange
+                           :in-pos  {}
+                           :out-pos {:val [1 0.5]}
                            :in    []
-                           :out   [ :val ]
+                           :out   {:val 0}
                            :func  (fn [{:keys [num]}] { :val num })
                            }
                   :Add    {
-                           :class :Add
-                           :param []
-                           :in    [ :a :b ]
-                           :out   [ :val ]
-                           :func  (fn [{:keys [a b]}] { :val (+ a b) })
+                           :class   :Add
+                           :param   {}
+                           :color   :black
+                           :in-pos  {:a [0 0.25] :b [0 0.75]}
+                           :out-pos {:val [1 0.5]}
+                           :in      {:a 0 :b 0}
+                           :out     {:val 0}
+                           :func    (fn [{:keys [a b]}] { :val (+ a b) })
                            }
                   }})
 #+end_src
@@ -120,6 +127,7 @@
   总感觉这样的数据后端在数据量大了之后会吃不消. 
 + 数据库中包含的对象 =node-class=
 
+*** 数据订阅调用
 使用 =app.renderer.subs= 将数据库中的信息暴露给其他模块调用
 
 #+begin_src clojure :tangle src/app/renderer/subs.cljs
@@ -132,12 +140,16 @@
   #+begin_src clojure :tangle src/app/renderer/subs.cljs
     (reg-sub :node-class (fn [db] (db :node-class)))
   #+end_src
-+ =classes= 所有节点的名称
++ =classes-names= 所有节点种类的名称
 
   #+begin_src clojure :tangle src/app/renderer/subs.cljs
-    (reg-sub :classes (fn [db] (keys (db :node-class))))
+    (reg-sub :classes-names (fn [db] (keys (db :node-class))))
   #+end_src
++ =class= 某节点类型的信息
 
+  #+begin_src clojure :tangle src/app/renderer/subs.cljs
+    (reg-sub :class (fn [db [_ class-name]] (get-in db [:node-class class-name])))
+  #+end_src
 ** view
 在 =app.renderer.view= 的 Namespace 下,
 调用 =reagent=, =re-frame= 的库, 引用:
@@ -165,8 +177,18 @@
   ;;; Function to draw board
   <<stage-1-draw-board>>
 
+  ;;; Info pan
+  <<stage-1-draw-info-pan>>
+
+  (defonce WIDTH (atom js/window.innerWidth))
+  (defonce HEIGHT (atom js/window.innerHeight))
+
   (defn main "Main View." []
-    [draw-board])
+    [:svg {:width  @WIDTH
+           :height @HEIGHT
+           :style {:background "#EEE"}}
+     [draw-board]
+     [draw-info-pan]])
 #+end_src
 
 一些用于绘制 svg 的一些小技巧:
@@ -184,82 +206,154 @@
   (于是在使用的时候, 通过 =[:g (transform ...) ...]= 这样的形式就可以快速调用属性了)
   
 *** Draw Board
-想要绘制一个编辑画板 (Art-board), 所需要知道的信息:
-
-#+name: stage-1-draw-board-info
-#+begin_src clojure :tangle no
-  (defonce SELECTED-ID (atom nil))        ; 当前选中的节点 ID
-  (defonce SELECTED-PORT (atom nil))      ; 当前选中的端口 [node-id port-id]
-  (defonce SCALE (atom 30))               ; 当前画布的缩放大小
-  (defonce INFO-PAN (atom nil))          ; 是否绘制消息面板
-
-  (defonce NODES (atom {                  ; 绘制节点信息
-                 :A {
-                     :id    :A
-                     :color :orange
-                     :type  :Number
-                     :pos-x 0
-                     :pos-y 1
-                     :param { :num 1 }
-                     :in    {}
-                     :out   { :val [:C :a 0.5 0.25] }
-                     }
-                 :B {
-                     :id    :B
-                     :color :orange
-                     :type  :Number
-                     :pos-x 1
-                     :pos-y 1
-                     :param { :num 2 }
-                     :in    {}
-                     :out   { :val [:C :a 0.5 0.75] }
-                     }
-                 :C {
-                     :id    :C
-                     :color :black
-                     :type  :Add
-                     :pos-x 0
-                     :pos-y 0
-                     :param {}
-                     :in    { :a [:A :val 0.25]
-                              :b [:B :val 0.75] }
-                     :out   { :val [nil nil 0.5 nil] }
-                     }
-                 }))
-#+end_src
-
-(注: 为了方便区分, 这里将外头定义的变量都使用大写来标识. )
-
-+ 为什么要将 =NODES= 放在 =view.cljs= 中而不是数据库中?
-  
-  +因为不会+
-
-  实际原因是因为感觉使用 =dispatch= 的速度不是很快,
-  导致会有不跟手的感觉, 所以很难受.
-  +虽然现在这样搞快了, 但是并没有快多少.+
-
-  之后打算把绘制用的数据储存在 =view= 端,
-  在 =db= 端虽然可以备份一份, 但是通过拷贝到 =view= 端的形式来进行加速绘制. 
-
+**** Overview
 绘制的整体框架如下:
 
 #+name: stage-1-draw-board
 #+begin_src clojure :noweb yes :tangle no
+  ;;; Info and Data
   <<stage-1-draw-board-info>>
+
+  ;;; Nodes
   <<stage-1-draw-node>>
+
+  ;;; Art-board
   <<stage-1-draw-art-board>>
 
   (defn draw-board []
-    (fn []
-        [:svg {:width 600
-               :height 300
-               :style {:border "2px solid black"}}
-         [draw-artboard
-          (for [[id node] @NODES]
-            ^{:key (str "node" id)}
-            [draw-node id node])]]))
+    (let [nodes DRAWED-NODES]
+      (fn []
+        [draw-artboard
+         (for [[from-node from-port to-node to-port] @ARCS]
+           ^{:key (str from-node "-p-" from-port "-t-" to-node "-p-" to-port)}
+           (let [[x1 y1] (get-in @NODES [from-port :out-pos from-port])
+                 [x2 y2] (get-in @NODES [to-port   :in-pos  to-port])]
+             [draw-node-arc {:x1 x1   :y1 y1
+                             :x2 x2   :y2 y2}]))
+         @nodes
+         ;; (for [[id node] @NODES]
+         ;;   (do
+         ;;     (println id)
+         ;;     ^{:key (str "node" id)} [draw-node id node]))
+         ])))
 #+end_src
 
+**** Data
+想要绘制一个编辑画板 (Art-board), 所需要知道的信息:
+
+#+name: stage-1-draw-board-info
+#+begin_src clojure :noweb yes :tangle no
+  (defonce SELECTED-ID (atom nil))        ; 当前选中的节点 ID
+  (defonce SELECTED-PORT (atom nil))      ; 当前选中的端口 [node-id port-id]
+  (defonce SCALE (atom 30))               ; 当前画布的缩放大小
+  (defonce INFO-PAN (atom nil))           ; 是否绘制消息面板
+  (defonce TR-X (atom 0))
+  (defonce TR-Y (atom 0))
+
+  (defonce CLASS (atom {
+                        :Number {
+                                 :class :Number
+                                 :param {:num 0}
+                                 :color :orange
+                                 :in-pos  {}
+                                 :out-pos {:val [1 0.5]}
+                                 :in    []
+                                 :out   {:val 0}
+                                 :func  (fn [{:keys [num]}] { :val num })
+                                 }
+                        :Add    {
+                                 :class   :Add
+                                 :param   {}
+                                 :color   :black
+                                 :in-pos  {:a [0 0.25] :b [0 0.75]}
+                                 :out-pos {:val [1 0.5]}
+                                 :in      {:a 0 :b 0}
+                                 :out     {:val 0}
+                                 :func    (fn [{:keys [a b]}] { :val (+ a b) })
+                                 }
+                        }))
+  (defonce NODES (atom {}))               ; 储存节点信息
+  (defonce ARCS  (atom #{}))              ; 储存边信息
+
+  (defonce DRAWED-NODES (atom '()))        ; 绘制的节点结果
+  (defonce DRAWED-ARCS  (atom '()))        ; 绘制的边结果
+
+  <<stage-1-draw-info-data>>
+#+end_src
+
+(注: 为了方便区分, 这里将外头定义的变量都使用大写来标识. )
+
+#+begin_html
+<details><summary>为什么要将 NODES 放在 view.cljs 中而不是数据库中?</summary>
+#+end_html
+  
++因为不会+
+
+实际原因是因为感觉使用 =dispatch= 的速度不是很快,
+导致会有不跟手的感觉, 所以很难受.
++虽然现在这样搞快了, 但是并没有快多少.+
+
+之后打算把绘制用的数据储存在 =view= 端,
+在 =db= 端虽然可以备份一份, 但是通过拷贝到 =view= 端的形式来进行加速绘制.
+
+#+begin_html
+</details>
+#+end_html
+
+以及数据的处理和操作
+
+#+name: stage-1-draw-info-data
+#+begin_src clojure :noweb yes :tangle no
+  ;;; Add/Delete Node
+  <<stage-1-node-add-delete>>
+
+  ;;; Add/Delete Arcs
+  <<stage-1-arc-add-delete>>
+#+end_src
++ 节点增加和删除
+  
+  #+name: stage-1-node-add-delete
+  #+begin_src clojure :tangle no
+    (defn del-node [id]
+      (swap! NODES dissoc id))
+
+    (defn add-node [& {:keys [name type x y]}]
+      (let [id (random-uuid)
+            {:keys [param in out func
+                    in-pos out-pos color]} (@CLASS type)]
+        (swap! NODES assoc id {:class type
+                               :name  name
+                               :param param
+                               :pos-x x
+                               :pos-y y
+                               :in    in
+                               :out   out
+                               :func  func
+                               :in-pos  in-pos
+                               :out-pos out-pos
+                               :color   color})))
+
+    (defn random-name []
+      "name")
+  #+end_src
++ 节点边增加, 删除, 以及查找
+
+  #+name: stage-1-arc-add-delete
+  #+begin_src clojure :tangle no
+    (defn add-arc [from-node from-port to-node to-port]
+      (swap! ARCS conj [from-node from-port to-node to-port]))
+
+    (defn delete-arc [from-node from-port to-node to-port]
+      (swap! ARCS disj [from-node from-port to-node to-port]))
+
+    (defn finde-arc [{:keys [from-node from-port to-node to-port]}]
+      (some @ARCS (fn [[f-n f-p t-n t-p]]
+                    (and (or (nil? from-node) (= from-node f-n))
+                         (or (nil? from-port) (= from-port f-p))
+                         (or (nil? to-node)   (= to-node   t-n))
+                         (or (nil? to-port)   (= to-port   t-p))))))
+  #+end_src
+**** View
 其中的框架具体内容如下:
 + 绘制 Art-board (作为主要的入口)
   #+name: stage-1-draw-art-board
@@ -267,7 +361,6 @@
     (defn draw-artboard [& nodes]
       ;; local closure variable
       (let [width     (atom 600)      height    (atom 300)
-            tr-x      (atom 0)        tr-y      (atom 0)
             scale     SCALE           dragging? (atom false)
             selected-id SELECTED-ID]
         ;; predefine functions
@@ -279,14 +372,19 @@
               start-artboard   (fn [mouse]
                                  (.stopPropagation mouse)
                                  (condp = mouse.button
-                                   0 (reset! dragging? true)
-                                   2 (reset! INFO-PAN  [:add-node])
+                                   0 (do
+                                       (reset! INFO-PAN nil)
+                                       (reset! dragging? true))
+                                   2 (do
+                                       (reset! INFO-PAN  {:x mouse.clientX
+                                                          :y mouse.clientY
+                                                          :type :add}))
                                    '()))
               moving-artboard  (fn [mouse]
                                  (.stopPropagation mouse)
                                  (when @dragging?
-                                   (reset! tr-x (+ @tr-x mouse.movementX))
-                                   (reset! tr-y (+ @tr-y mouse.movementY))))
+                                   (reset! TR-X (+ @TR-X mouse.movementX))
+                                   (reset! TR-Y (+ @TR-Y mouse.movementY))))
               stop-artboard    (fn [mouse]
                                  (reset! dragging? false))]
           (fn [node]
@@ -295,73 +393,102 @@
              [:mask#art-board-background-mask
               [:rect {:width  @width
                       :height @height
-                      :fill   :white}]]
+                      :fill   :white
+                      :stroke :black
+                      :stroke-width 3}]]
              ;; Artboard
-             [:g {:mask :art-board-background-mask}
+             [:g {:transform "translate(10 10)"}
               ;; background
               [:rect {:width  @width
                       :height @height
                       :fill   :white
+                      :stroke :black
+                      :stroke-width 3
                       :on-wheel       resize-artboard
                       :on-mouse-down  start-artboard
                       :on-mouse-move  moving-artboard
                       :on-mouse-leave stop-artboard
                       :on-mouse-up    stop-artboard}]
               ;; nodes
-              [:g (transform :x @tr-x :y @tr-y :s @scale)
-               nodes]]]))))
+              [:g {:mask "url(#art-board-background-mask)"}
+               [:g (transform :x @TR-X :y @TR-Y :s @scale)
+                nodes]]]]))))
   #+end_src
 
   其中有一个两层的 =let= 函数, 分别用于声明所用的变量闭包以及内部使用的函数.
   (关于为什么提前定义内部使用的函数: 这是为了防止在之后重新绘制节点的时候,
   每次都需要重新执行并计算函数而浪费性能. ) 
-+ 绘制节点
-
-  #+name: stage-1-draw-node
-  #+begin_src clojure :noweb yes :tangle no
-    <<stage-1-draw-node-arc>>
-    <<stage-1-draw-node-port>>
-    <<stage-1-draw-node-body>>
-
-    (defn draw-node [id node]
-      (fn []
-        (let [x (get-in @NODES [id :pos-x])
-              y (get-in @NODES [id :pos-y])]
-          [:g
-           ;; draw node arc
-           (doall
-            (for [[port [to-node _ from-pos to-pos]] (node :out)
-                  :when (not (nil? to-node))]
-              ^{:key (str id "arc" port)}
-              [draw-node-arc {
-                              :x1  (+ 1 x)
-                              :y1  (+ from-pos y)
-                              :x2  (get-in @NODES [to-node :pos-x])
-                              :y2  (+ to-pos (get-in @NODES [to-node :pos-y]))}]))
-
-           ;; draw body
-           ^{:key (str id "body")} [draw-node-body id {:x x :y y}]
-
-           ;; draw in port
-           (for [[port [_ _ dy]] (node :in)]
-              ^{:key (str id "in" port)} [draw-node-port {:id id
-                                                          :port port
-                                                          :x x
-                                                          :y (+ y dy)}])
-           ;; draw out port
-           (for [[port [_ _ dy _]] (node :out)]
-              ^{:key (str id "out" port)} [draw-node-port {:id id
-                                                           :port port
-                                                           :x (+ x 1)
-                                                           :y (+ y dy)}])])))
++ 绘制节点的边    
+  
+  #+name: stage-1-draw-node-arc  
+  #+begin_src clojure :tangle no
+    (defn draw-node-arc [{:keys [x1 y1 x2 y2]}]
+            (fn [{:keys [x1 y1 x2 y2]}]
+              (let [weight (min 5 (abs (* -0.1 (- y2 y1) (- x2 x1))))]
+                [:svg/path {:d (str "M" x1 " " y1 " "
+                                "C" (+ x1 weight) " " y1 ", "
+                                (- x2 weight) " " y2 ", "
+                                x2 " " y2)
+                            :stroke :black
+                            :stroke-width 0.1
+                            :fill :none}])))
   #+end_src
++ 绘制节点
+  + 整体
+    #+name: stage-1-draw-node
+    #+begin_src clojure :noweb yes :tangle no
+      ;;; Draw nodes
+      <<stage-1-draw-node-arc>>
+      <<stage-1-draw-node-port>>
+      <<stage-1-draw-node-body>>
+
+      (defn draw-node [id node]
+        (fn []
+          (println :draw-node id)
+          (let [x (get-in @NODES [id :pos-x])
+                y (get-in @NODES [id :pos-y])]
+            [:g
+             ;; draw body
+             ^{:key (str id "body")} [draw-node-body id {:x x :y y}]
+
+             ;; draw in port
+             (for [[port [dx dy]] (node :in-pos)]
+               ^{:key (str id "in" port)} [draw-node-port {:id   id
+                                                           :port port
+                                                           :x    (+ x dx)
+                                                           :y    (+ y dy)}])
+
+             ;; draw out port
+             (for [[port [dx dy]] (node :out-pos)]
+               ^{:key (str id "out" port)} [draw-node-port {:id   id
+                                                            :port port
+                                                            :x    (+ x dx)
+                                                            :y    (+ y dy)}])])))
+
+      (add-watch NODES
+                 :redraw
+                 #(do
+                    (reset! DRAWED-NODES
+                            (for [[id node] @NODES]
+                              ^{:key (str "node" id)} [draw-node id node]))
+                    (println :redraw)))
+    #+end_src
   + 绘制节点主体
   
     #+name: stage-1-draw-node-body
     #+begin_src clojure :tangle no
       (defn draw-node-body [id {:keys [x y]}]
         (let [start-move (fn [node mouse]
-                           (reset! SELECTED-ID node))
+                           (condp = mouse.button
+                             0 (do
+                                 (reset! INFO-PAN nil)
+                                 (reset! SELECTED-ID node))
+                             2 (do
+                                 (reset! INFO-PAN {:x mouse.clientX
+                                                   :y mouse.clientY
+                                                   :type :node
+                                                   :info node}))
+                             '()))
               move-node  (fn [id mouse]
                            (when (= id @SELECTED-ID)
                              (reset!
@@ -383,29 +510,12 @@
                     :on-mouse-leave end-move
                     :on-mouse-up    end-move}]])))
     #+end_src
-  + 绘制节点的边
-  
-    #+name: stage-1-draw-node-arc
-    #+begin_src clojure :tangle no
-
-      (defn draw-node-arc [{:keys [x1 y1 x2 y2]}]
-        (fn [{:keys [x1 y1 x2 y2]}]
-          (let [weight (min 5 (abs (* -0.1 (- y2 y1) (- x2 x1))))]
-            [:svg/path {:d (str "M" x1 " " y1 " "
-                            "C" (+ x1 weight) " " y1 ", "
-                            (- x2 weight) " " y2 ", "
-                            x2 " " y2)
-                        :stroke :black
-                        :stroke-width 0.1
-                        :fill :none}])))
-    #+end_src
   + 绘制节点的接口
 
     #+name: stage-1-draw-node-port
     #+begin_src clojure
       (defn draw-node-port [{:keys [id port x y]}]
         (let [select-port (fn [node-id port-id mouse]
-                            (println :clicked @SELECTED-PORT)
                             (condp = mouse.button
                               0 (reset! SELECTED-PORT [node-id port-id])
                               '()))]
@@ -422,7 +532,88 @@
                                :white))
                      :on-mouse-down #(select-port id port %)}])))
     #+end_src
+*** Info-pan
+绘制 Info-pan: 用于展示节点的信息, 添加或者删除节点等进行交互的工作. 
 
+#+name: stage-1-draw-info-pan
+#+begin_src clojure :noweb yes :tangle no
+  <<stage-1-draw-add-pan>>
+  <<stage-1-draw-node-pan>>
+
+  (defn draw-info-pan []
+    (let [width  150
+          height 200
+          rect   [:rect {:width  width
+                     :height height
+                     :fill   :white
+                     :fill-opacity 0.5
+                     :stroke :black
+                     :stroke-width 2}]]
+      (fn []
+        (when-not (nil? @INFO-PAN)
+          (let [{:keys [type x y info]} @INFO-PAN]
+            [:g (transform :x x :y y)
+             [:mask#info-pan-mask rect]
+             rect
+             [:foreignObject {:mask "url(info-pan-mask)"
+                              :width width
+                              :height height}
+              [:div {:style {:overflow-y :scroll
+                             :width "100%"
+                             :height "100%"
+                             :margin 0
+                             :padding 0}}
+               (condp = type
+                  :add  [draw-add-pan info]
+                  :node [draw-node-pan info]
+                  '())]]])))))
+#+end_src
+
++ 绘制添加节点的表单
+    
+  #+name: stage-1-draw-add-pan
+  #+begin_src clojure :tangle no
+    (defn draw-add-pan [info]
+      (let [search (atom "")]
+        (let [update-value #(reset! search (-> % .-target .-value))
+              make-new-node (fn [type mouse]
+                              (let [x (/ (- mouse.clientX @TR-X) @SCALE)
+                                    y (/ (- mouse.clientY @TR-Y) @SCALE)]
+                                (reset! INFO-PAN nil)
+                                (add-node {:name (random-name)
+                                           :type type
+                                           :x x
+                                           :y y})))]
+         (fn []
+           [:div
+            [:div.info-title {:style {:background "#CCC"
+                                      :padding "3px"}}
+             "Add Node"]
+            [:div.input-field {:style {:padding "3px"}}
+             [:input {:style {:width "60%"}
+                     :value @search
+                     :placeholder "Class"
+                     :on-change update-value}]]
+            (for [[type _] @CLASS]
+              ^{:key (str "i-p-s-" type)}
+              [:div.type-select {:style {:padding "3px"}
+                                 :on-click #(make-new-node type %)}
+               (str type)])]))))
+  #+end_src
++ 绘制节点信息表单
+    
+  #+name: stage-1-draw-node-pan
+  #+begin_src clojure :tangle no
+    (defn draw-node-pan [info]
+      (fn []
+        (let [{:keys [param color name]} @(cursor NODES [info])]
+          [:div
+           [:div.info-title {:style {:background color
+                                     :padding "3px"}}
+            name
+            ]])))
+  #+end_src
+    
 ** events
 在 =app.renderer.events= Namespace 中定义程序的主要的控制事件:
 
