@@ -13,10 +13,10 @@
 (defonce SELECTED-PORT (atom nil))      ; 当前选中的端口 [node-id port-id]
 (defonce SCALE (atom 30))               ; 当前画布的缩放大小
 (defonce INFO-PAN (atom nil))           ; 是否绘制消息面板
-(defonce TR-X (atom 0))
-(defonce TR-Y (atom 0))
+(defonce TR-X (atom 0))                 ; 画板 X 方向的位移量
+(defonce TR-Y (atom 0))                 ; 画板 Y 方向的位移量
 
-(defonce CLASS (atom {
+(defonce CLASS (atom {                  ; 节点类的信息
                       :Number {
                                :class :Number
                                :param {:num 0}
@@ -38,11 +38,12 @@
                                :func    (fn [{:keys [a b]}] { :val (+ a b) })
                                }
                       }))
+
 (defonce NODES (atom {}))               ; 储存节点信息
 (defonce ARCS  (atom #{}))              ; 储存边信息
 
-(defonce DRAWED-NODES (atom '()))        ; 绘制的节点结果
-(defonce DRAWED-ARCS  (atom '()))        ; 绘制的边结果
+(defonce DRAWED-NODES (atom '()))       ; 绘制的节点结果
+(defonce DRAWED-ARCS  (atom '()))       ; 绘制的边结果
 
 ;;; Add/Delete Node
 (defn del-node [id]
@@ -69,7 +70,14 @@
 
 ;;; Add/Delete Arcs
 (defn add-arc [from-node from-port to-node to-port]
-  (swap! ARCS conj [from-node from-port to-node to-port]))
+  (cond
+    (and (get-in @NODES [from-node :out-pos from-port])
+         (get-in @NODES [to-node   :in-pos  to-port]))
+    (swap! ARCS conj [from-node from-port to-node to-port])
+
+    (and (get-in @NODES [from-node :in-pos  from-port])
+         (get-in @NODES [to-node   :out-pos to-port]))
+    (swap! ARCS conj [to-node to-port from-node from-port])))
 
 (defn delete-arc [from-node from-port to-node to-port]
   (swap! ARCS disj [from-node from-port to-node to-port]))
@@ -84,20 +92,40 @@
 ;;; Nodes
 ;;; Draw nodes
 (defn draw-node-arc [{:keys [x1 y1 x2 y2]}]
-        (fn [{:keys [x1 y1 x2 y2]}]
-          (let [weight (min 5 (abs (* -0.1 (- y2 y1) (- x2 x1))))]
-            [:svg/path {:d (str "M" x1 " " y1 " "
-                            "C" (+ x1 weight) " " y1 ", "
-                            (- x2 weight) " " y2 ", "
-                            x2 " " y2)
-                        :stroke :black
-                        :stroke-width 0.1
-                        :fill :none}])))
+  (fn [{:keys [x1 y1 x2 y2]}]
+    (let [weight (min 5 (* 0.1 (abs (- y2 y1)) (max 2 (abs (- x2 x1)))))]
+      [:path {:d (str "M" x1 " " y1 " "
+                      "C" (+ x1 weight) " " y1 ", "
+                      (- x2 weight) " " y2 ", "
+                      x2 " " y2)
+              :stroke :black
+              :stroke-width 0.1
+              :fill :none}])))
+
+(defn draw-arcs []
+  (fn []
+    [:g
+     (doall
+      (for [[from-node from-port to-node to-port] @ARCS]
+        (let [x1 @(cursor NODES [from-node :pos-x])
+              y1 @(cursor NODES [from-node :pos-y])
+              x2 @(cursor NODES [to-node :pos-x])
+              y2 @(cursor NODES [to-node :pos-y])
+              [dx1 dy1] @(cursor NODES [from-node :out-pos from-port])
+              [dx2 dy2] @(cursor NODES [to-node   :in-pos  to-port])]
+          ^{:key (str "arc-" from-node from-port to-node to-port)}
+          [draw-node-arc {:x1 (+ x1 dx1) :y1 (+ y1 dy1)
+                          :x2 (+ x2 dx2) :y2 (+ y2 dy2)}])))]))
 (defn draw-node-port [{:keys [id port x y]}]
   (let [select-port (fn [node-id port-id mouse]
                       (condp = mouse.button
-                        0 (reset! SELECTED-PORT [node-id port-id])
+                        0 (if (nil? @SELECTED-PORT)
+                            (reset! SELECTED-PORT [node-id port-id])
+                            (let [[id2 port2] @SELECTED-PORT]
+                              (reset! SELECTED-PORT nil)
+                              (add-arc id2 port2 node-id port-id)))
                         '()))]
+
    (fn [{:keys [x y]}]
      [:circle {:cx x
                :cy y
@@ -145,7 +173,6 @@
 
 (defn draw-node [id node]
   (fn []
-    (println :draw-node id)
     (let [x (get-in @NODES [id :pos-x])
           y (get-in @NODES [id :pos-y])]
       [:g
@@ -166,26 +193,23 @@
                                                       :x    (+ x dx)
                                                       :y    (+ y dy)}])])))
 
-(add-watch NODES
-           :redraw
-           #(do
-              (reset! DRAWED-NODES
-                      (for [[id node] @NODES]
-                        ^{:key (str "node" id)} [draw-node id node]))
-              (println :redraw)))
+(defn draw-nodes []
+  (fn []
+    [:g
+     (for [[id node] @NODES]
+      ^{:key (str "node" id)} [draw-node id node])]))
 
 ;;; Art-board
 (defn draw-artboard [& nodes]
   ;; local closure variable
   (let [width     (atom 600)      height    (atom 300)
-        scale     SCALE           dragging? (atom false)
-        selected-id SELECTED-ID]
+        dragging? (atom false)]
     ;; predefine functions
     (let [resize-artboard  (fn [mouse]
                              (.stopPropagation mouse)
                              (reset!
-                              scale
-                              (max 10 (min 100 (+ (* 0.05 mouse.deltaY) @scale)))))
+                              SCALE
+                              (max 10 (min 100 (+ (* 0.05 mouse.deltaY) @SCALE)))))
           start-artboard   (fn [mouse]
                              (.stopPropagation mouse)
                              (condp = mouse.button
@@ -196,7 +220,7 @@
                                    (reset! INFO-PAN  {:x mouse.clientX
                                                       :y mouse.clientY
                                                       :type :add}))
-                               '()))
+                               nil))
           moving-artboard  (fn [mouse]
                              (.stopPropagation mouse)
                              (when @dragging?
@@ -228,25 +252,15 @@
                   :on-mouse-up    stop-artboard}]
           ;; nodes
           [:g {:mask "url(#art-board-background-mask)"}
-           [:g (transform :x @TR-X :y @TR-Y :s @scale)
+           [:g (transform :x @TR-X :y @TR-Y :s @SCALE)
             nodes]]]]))))
 
 (defn draw-board []
   (let [nodes DRAWED-NODES]
     (fn []
       [draw-artboard
-       (for [[from-node from-port to-node to-port] @ARCS]
-         ^{:key (str from-node "-p-" from-port "-t-" to-node "-p-" to-port)}
-         (let [[x1 y1] (get-in @NODES [from-port :out-pos from-port])
-               [x2 y2] (get-in @NODES [to-port   :in-pos  to-port])]
-           [draw-node-arc {:x1 x1   :y1 y1
-                           :x2 x2   :y2 y2}]))
-       @nodes
-       ;; (for [[id node] @NODES]
-       ;;   (do
-       ;;     (println id)
-       ;;     ^{:key (str "node" id)} [draw-node id node]))
-       ])))
+       ^{:key :draw-arcs} [draw-arcs]
+       ^{:key :draw-nodes} [draw-nodes]])))
 
 ;;; Info pan
 (defn draw-add-pan [info]
@@ -276,13 +290,49 @@
                              :on-click #(make-new-node type %)}
            (str type)])]))))
 (defn draw-node-pan [info]
-  (fn []
-    (let [{:keys [param color name]} @(cursor NODES [info])]
-      [:div
-       [:div.info-title {:style {:background color
-                                 :padding "3px"}}
-        name
-        ]])))
+  (let [params (atom {})
+        name-f (atom "")
+        editname? (atom false)]
+    (let [update-param (fn [arg input]
+                         #(reset!
+                           params
+                           (assoc @params arg (-> input .-target .-value))))
+          update-name (fn [input]
+                        #(reset! name-f (-> input .-target .-value)))]
+     (fn []
+       (let [{:keys [param color name]} @(cursor NODES [info])]
+         (reset! name-f name)
+         (reset! editname? false)
+         (reset! params param)
+         [:div
+          [:div.info-title {:style {:background color
+                                    :padding "3px"}}
+           (if @editname?
+             [:input.info-input {:value @name-f
+                                 :style {:width "30%"
+                                         :padding "2px"
+                                         :margin "0"
+                                         :margin-right "3px"}
+                                 :on-change update-name}]
+             [:span {:on-click #(println :clicked)}
+              @name-f])]
+          (for [[arg val] param]
+            ^{:key (str "info-p-" arg)}
+            [:div.info-item {:style {:margin-top "3px"
+                                     :margin-left "2px"
+                                     :margin-right "2px"}}
+             [:span.info-label  {:style {:width "30%"
+                                         :padding "2px"
+                                         :margin "0"
+                                         :margin-right "3px"}}
+              arg]
+             [:input.info-input {
+                                 :style {:width "50%"
+                                         :padding "2px"
+                                         :margin "0"}
+                                 :on-change update-param}]])
+          [:button.info-button {:width "80%"}
+           "delete node"]])))))
 
 (defn draw-info-pan []
   (let [width  150
@@ -316,8 +366,9 @@
 (defonce HEIGHT (atom js/window.innerHeight))
 
 (defn main "Main View." []
-  [:svg {:width  @WIDTH
-         :height @HEIGHT
-         :style {:background "#EEE"}}
-   [draw-board]
-   [draw-info-pan]])
+  (fn []
+     [:svg {:width  @WIDTH
+            :height @HEIGHT
+            :style {:background "#CCC"}}
+      [draw-board]
+      [draw-info-pan]]))
