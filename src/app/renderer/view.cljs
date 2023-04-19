@@ -67,9 +67,11 @@
 (defonce DRAWED-ARCS  (atom '()))       ; 绘制的边结果
 
 ;;; Add/Delete Arcs
+;;; Delete arc by [from-node from-port to-node to-port]
 (defn delete-arc [from-node from-port to-node to-port]
   (swap! ARCS disj [from-node from-port to-node to-port]))
 
+;;; Find arc(s) by {:from-node ... :from-port ... ...}
 (defn find-arc [{:keys [from-node from-port to-node to-port]}]
   (filter (fn [[f-n f-p t-n t-p]]
             (and (or (nil? from-node) (= from-node f-n))
@@ -78,37 +80,27 @@
                  (or (nil? to-port)   (= to-port   t-p))))
           @ARCS ))
 
-(defn add-arc-force [from-node from-port to-node to-port]
-  (cond
-    (and (get-in @NODES [from-node :out-pos from-port])
-         (get-in @NODES [to-node   :in-pos  to-port]))
-    (swap! ARCS conj [from-node from-port to-node to-port])
-
-    (and (get-in @NODES [from-node :in-pos  from-port])
-         (get-in @NODES [to-node   :out-pos to-port]))
-    (swap! ARCS conj [to-node to-port from-node from-port])))
-
+;;; Add arc by [from-node from-port to-node to-port]
 (defn add-arc [from-node from-port to-node to-port]
   (cond
     (and (get-in @NODES [from-node :out-pos from-port])
          (get-in @NODES [to-node   :in-pos  to-port]))
     (do
-      (doall
-       (for [[f-n f-p t-n t-p] (find-arc {:to-node to-node
-                                          :to-port to-port})]
-         (delete-arc f-n f-p t-n t-p)))
+      (doall (for [[f-n f-p t-n t-p] (find-arc {:to-node to-node
+                                                :to-port to-port})]
+               (delete-arc f-n f-p t-n t-p)))
       (swap! ARCS conj [from-node from-port to-node to-port]))
 
     (and (get-in @NODES [from-node :in-pos  from-port])
          (get-in @NODES [to-node   :out-pos to-port]))
     (do
-      (doall
-       (for [[f-n f-p t-n t-p] (find-arc {:to-node from-node
-                                          :to-port from-port})]
-         (delete-arc f-n f-p t-n t-p)))
+      (doall (for [[f-n f-p t-n t-p] (find-arc {:to-node from-node
+                                                :to-port from-port})]
+               (delete-arc f-n f-p t-n t-p)))
       (swap! ARCS conj [to-node to-port from-node from-port]))))
 
 ;;; Add/Delete Node
+;;; Delete Node
 (defn del-node [id]
   (doall
    (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
@@ -120,9 +112,9 @@
      (do
        (println :delete-arc from-node from-port to-node to-port)
        (delete-arc from-node from-port to-node to-port))))
-  (println :deleted-arcs @ARCS)
   (swap! NODES dissoc id))
 
+;;; Add Node
 (defn add-node [& {:keys [name type x y]}]
   (let [id (random-uuid)
         {:keys [param in out func
@@ -183,7 +175,7 @@
                             (let [[id2 port2] @SELECTED-PORT]
                               (reset! SELECTED-PORT nil)
                               (add-arc id2 port2 node-id port-id)))
-                        '()))]
+                        nil))]
 
    (fn [{:keys [x y]}]
      [:circle {:cx x
@@ -405,8 +397,7 @@
     (fn [info]
       [:div
        [:div.info-title {:style {:background :grey
-                                 :padding "3px"}}
-        ]
+                                 :padding "3px"}}]
        [:button.info-button {:width "80%"
                              :on-click #(delete info)}
         "delete arc"]])))
@@ -421,7 +412,7 @@
                        :stroke :black
                        :stroke-width 2}]]
     (fn []
-      (when-not (nil? @INFO-PAN)
+      (when-not (nil? @INFO-PAN)        ; draw when INFO-PAN is triggered
         (let [{:keys [type x y info]} @INFO-PAN]
           [:g (transform :x x :y y)
            [:mask#info-pan-mask rect]

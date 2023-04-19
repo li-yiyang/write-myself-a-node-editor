@@ -62,6 +62,11 @@
 #+caption: A very simple Demo
 [[img/demo.gif]]
 
+目前实现的功能:
++ [x] 绘制节点和边
++ [x] 删除节点和边
++ [ ] *TODO* 修改节点的值
+  
 *** core
 在 =app.renderer.core= 的 Namespace 下,
 描述 =start!= 的逻辑:
@@ -246,90 +251,136 @@
 
 + 节点边增加, 删除, 以及查找
 
+  目前对于边的存储的方式, 使用一个长度为 4 的 vector 来进行储存.
+  每个边的节点储存形式如下 =[from-node from-port to-node to-port]=.
+  =ARCS= 为一个存放 set 的 atom, 使得边的储存是唯一的,
+  即两个节点之间不会有平行线. 
+
   #+name: stage-1-arc-add-delete
-  #+begin_src clojure :tangle no
-    (defn delete-arc [from-node from-port to-node to-port]
-      (swap! ARCS disj [from-node from-port to-node to-port]))
+  #+begin_src clojure :noweb yes :tangle no
+    ;;; Delete arc by [from-node from-port to-node to-port]
+    <<stage-1-delete-arc>>
 
-    (defn find-arc [{:keys [from-node from-port to-node to-port]}]
-      (filter (fn [[f-n f-p t-n t-p]]
-                (and (or (nil? from-node) (= from-node f-n))
-                     (or (nil? from-port) (= from-port f-p))
-                     (or (nil? to-node)   (= to-node   t-n))
-                     (or (nil? to-port)   (= to-port   t-p))))
-              @ARCS ))
+    ;;; Find arc(s) by {:from-node ... :from-port ... ...}
+    <<stage-1-find-arc>>
 
-    (defn add-arc-force [from-node from-port to-node to-port]
-      (cond
-        (and (get-in @NODES [from-node :out-pos from-port])
-             (get-in @NODES [to-node   :in-pos  to-port]))
-        (swap! ARCS conj [from-node from-port to-node to-port])
-
-        (and (get-in @NODES [from-node :in-pos  from-port])
-             (get-in @NODES [to-node   :out-pos to-port]))
-        (swap! ARCS conj [to-node to-port from-node from-port])))
-
-    (defn add-arc [from-node from-port to-node to-port]
-      (cond
-        (and (get-in @NODES [from-node :out-pos from-port])
-             (get-in @NODES [to-node   :in-pos  to-port]))
-        (do
-          (doall
-           (for [[f-n f-p t-n t-p] (find-arc {:to-node to-node
-                                              :to-port to-port})]
-             (delete-arc f-n f-p t-n t-p)))
-          (swap! ARCS conj [from-node from-port to-node to-port]))
-
-        (and (get-in @NODES [from-node :in-pos  from-port])
-             (get-in @NODES [to-node   :out-pos to-port]))
-        (do
-          (doall
-           (for [[f-n f-p t-n t-p] (find-arc {:to-node from-node
-                                              :to-port from-port})]
-             (delete-arc f-n f-p t-n t-p)))
-          (swap! ARCS conj [to-node to-port from-node from-port]))))
+    ;;; Add arc by [from-node from-port to-node to-port]
+    <<stage-1-add-arc>>
   #+end_src
+  + 边的删除
+
+    #+name: stage-1-delete-arc
+    #+begin_src clojure :tangle no
+      (defn delete-arc [from-node from-port to-node to-port]
+        (swap! ARCS disj [from-node from-port to-node to-port]))
+    #+end_src
+
+    使用 [[https://cljs.github.io/api/cljs.core/disj][=disj=]] 方法从 =ARCS= 中删除边.
+  + 边的查找
+
+    #+name: stage-1-find-arc
+    #+begin_src clojure :tangle no
+      (defn find-arc [{:keys [from-node from-port to-node to-port]}]
+        (filter (fn [[f-n f-p t-n t-p]]
+                  (and (or (nil? from-node) (= from-node f-n))
+                       (or (nil? from-port) (= from-port f-p))
+                       (or (nil? to-node)   (= to-node   t-n))
+                       (or (nil? to-port)   (= to-port   t-p))))
+                @ARCS ))
+    #+end_src
+
+    使用 [[https://cljs.github.io/api/cljs.core/filter][=filter=]] 方法从 =ARCS= 中筛选符合条件的边, 通过四个关键词进行限定匹配. 
+  + 边的增加
+
+    #+name: stage-1-add-arc
+    #+begin_src clojure :tangle no
+      (defn add-arc [from-node from-port to-node to-port]
+        (cond
+          (and (get-in @NODES [from-node :out-pos from-port])
+               (get-in @NODES [to-node   :in-pos  to-port]))
+          (do
+            (doall (for [[f-n f-p t-n t-p] (find-arc {:to-node to-node
+                                                      :to-port to-port})]
+                     (delete-arc f-n f-p t-n t-p)))
+            (swap! ARCS conj [from-node from-port to-node to-port]))
+
+          (and (get-in @NODES [from-node :in-pos  from-port])
+               (get-in @NODES [to-node   :out-pos to-port]))
+          (do
+            (doall (for [[f-n f-p t-n t-p] (find-arc {:to-node from-node
+                                                      :to-port from-port})]
+                     (delete-arc f-n f-p t-n t-p)))
+            (swap! ARCS conj [to-node to-port from-node from-port]))))
+    #+end_src
+
+    在添加节点前进行判断, 检测出入节点 (因为边的逻辑是 =from -> to= 的有向边);
+    而为了使得不会存在一个入点存在多条边同时进入, 在添加前先删除所有的其他入边.
+
+    于是目前一个端口可以对应多个出边, 但是只能有一个入边. 
 + 节点增加和删除
   
   #+name: stage-1-node-add-delete
-  #+begin_src clojure :tangle no
-    (defn del-node [id]
-      (doall
-       (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
-         (do
-           (println :delete-arc from-node from-port to-node to-port)
-           (delete-arc from-node from-port to-node to-port))))
-      (doall
-       (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
-         (do
-           (println :delete-arc from-node from-port to-node to-port)
-           (delete-arc from-node from-port to-node to-port))))
-      (println :deleted-arcs @ARCS)
-      (swap! NODES dissoc id))
+  #+begin_src clojure :noweb yes :tangle no
+    ;;; Delete Node
+    <<stage-1-del-node>>
 
-    (defn add-node [& {:keys [name type x y]}]
-      (let [id (random-uuid)
-            {:keys [param in out func
-                    in-pos out-pos color]} (@CLASS type)]
-        (swap! NODES assoc id {:class type
-                               :name  name
-                               :param param
-                               :pos-x x
-                               :pos-y y
-                               :in    in
-                               :out   out
-                               :in-pos  in-pos
-                               :out-pos out-pos
-                               :color   color})))
+    ;;; Add Node
+    <<stage-1-add-node>>
 
     (defn random-name []
       "name")
   #+end_src
+
+  + 节点的删除
+
+    #+name: stage-1-del-node
+    #+begin_src clojure :tangle no
+      (defn del-node [id]
+        (doall
+         (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
+           (do
+             (println :delete-arc from-node from-port to-node to-port)
+             (delete-arc from-node from-port to-node to-port))))
+        (doall
+         (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
+           (do
+             (println :delete-arc from-node from-port to-node to-port)
+             (delete-arc from-node from-port to-node to-port))))
+        (swap! NODES dissoc id))
+    #+end_src
+    + 首先删除所有的出/入边
+    + 然后删除对应的节点
+  + 节点的增加
+
+    #+name: stage-1-add-node
+    #+begin_src clojure
+      (defn add-node [& {:keys [name type x y]}]
+        (let [id (random-uuid)
+              {:keys [param in out func
+                      in-pos out-pos color]} (@CLASS type)]
+          (swap! NODES assoc id {:class type
+                                 :name  name
+                                 :param param
+                                 :pos-x x
+                                 :pos-y y
+                                 :in    in
+                                 :out   out
+                                 :in-pos  in-pos
+                                 :out-pos out-pos
+                                 :color   color})))
+    #+end_src
+  + =random-name= 之后会加入自动生成一个随机名字的函数
+    +(属于是传统艺能了, 可以看看我计科导作业 [[https://github.com/li-yiyang/CARDs][CARDs]] 的 motto 的生成)+
+  
 *** View
 其中的框架具体内容如下:
 
 **** art-board
-绘制 Art-board (作为主要的入口)
+绘制 Art-board (作为主要的入口), 大致逻辑如下:
++ 绘制一个蒙版和背景并将蒙版叠在背景上 =rect=
++ 当背景被拖动的时候, 响应拖动事件和鼠标落下的事件
++ 绘制其他的主体
+  
 #+name: stage-1-draw-art-board
 #+begin_src clojure :tangle no
   (defn draw-artboard [& nodes]
@@ -390,11 +441,12 @@
 #+end_src
 
 其中有一个两层的let函数分别用于声明所用的变量闭包以及内部使用的函数.
- 关于为什么提前定义内部使用的函数这是为了防止在之后重新绘制节点的时候,
-每次都需要重新执行并计算函数而浪费性能. ) 
+(关于为什么提前定义内部使用的函数这是为了防止在之后重新绘制节点的时候,
+这是为了防止每次都需要重新执行并计算函数而浪费性能. ) 
 
 **** draw-node-arc
 绘制节点的边  
++ 绘制边的方式为一根 Bessel 曲线
 
 #+name: stage-1-draw-node-arc  
 #+begin_src clojure :tangle no
@@ -434,6 +486,7 @@
 
 **** draw-node
 绘制节点
+
 + 整体
   #+name: stage-1-draw-node
   #+begin_src clojure :noweb yes :tangle no
@@ -510,6 +563,11 @@
   #+end_src
 + 绘制节点的接口
 
+  在 =NODES= 中的数据记录的 =in-pos=, =out-pos= 的形式为
+  ={:port-name [port-relative-x port-relative-y]}=.
+  使用相对位移的方式来进行绘制端口相对节点 (右上角) 的位置.
+
+
   #+name: stage-1-draw-node-port
   #+begin_src clojure
     (defn draw-node-port [{:keys [id port x y]}]
@@ -520,7 +578,7 @@
                                 (let [[id2 port2] @SELECTED-PORT]
                                   (reset! SELECTED-PORT nil)
                                   (add-arc id2 port2 node-id port-id)))
-                            '()))]
+                            nil))]
 
        (fn [{:keys [x y]}]
          [:circle {:cx x
@@ -535,6 +593,7 @@
                              :white))
                    :on-mouse-down #(select-port id port %)}])))
   #+end_src
+  
 ** Info-pan
 绘制 Info-pan: 用于展示节点的信息, 添加或者删除节点等进行交互的工作. 
 
@@ -554,7 +613,7 @@
                          :stroke :black
                          :stroke-width 2}]]
       (fn []
-        (when-not (nil? @INFO-PAN)
+        (when-not (nil? @INFO-PAN)        ; draw when INFO-PAN is triggered
           (let [{:keys [type x y info]} @INFO-PAN]
             [:g (transform :x x :y y)
              [:mask#info-pan-mask rect]
@@ -669,11 +728,10 @@
         (fn [info]
           [:div
            [:div.info-title {:style {:background :grey
-                                     :padding "3px"}}
-            ]
+                                     :padding "3px"}}]
            [:button.info-button {:width "80%"
                                  :on-click #(delete info)}
             "delete arc"]])))
   #+end_src
 * COMMENT LocalWords
-#  LocalWords: LocalWords magit svg cljs noweb
+#  LocalWords: LocalWords magit svg cljs noweb TODO
