@@ -37,6 +37,27 @@
                                :out     {:val 0}
                                :func    (fn [{:keys [a b]}] { :val (+ a b) })
                                }
+                      :Sub    {
+                               :class   :Sub
+                               :param   {}
+                               :color   :grey
+                               :in-pos  {:a [0 0.25] :b [0 0.75]}
+                               :out-pos {:val [1 0.5]}
+                               :in      {:a 0 :b 0}
+                               :out     {:val 0}
+                               :func    (fn [{:keys [a b]}] {:val (- a b)})
+                               }
+                      :Out    {
+                               :class   :Sub
+                               :param   {}
+                               :color   :black
+                               :in-pos  {:a [0 0.5]}
+                               :out-pos {}
+                               :in      {:a nil}
+                               :out     {}
+                               :func    (fn [{:keys [a]}]
+                                          (println a)
+                                          {})}
                       }))
 
 (defonce NODES (atom {}))               ; 储存节点信息
@@ -45,8 +66,61 @@
 (defonce DRAWED-NODES (atom '()))       ; 绘制的节点结果
 (defonce DRAWED-ARCS  (atom '()))       ; 绘制的边结果
 
+;;; Add/Delete Arcs
+(defn delete-arc [from-node from-port to-node to-port]
+  (swap! ARCS disj [from-node from-port to-node to-port]))
+
+(defn find-arc [{:keys [from-node from-port to-node to-port]}]
+  (filter (fn [[f-n f-p t-n t-p]]
+            (and (or (nil? from-node) (= from-node f-n))
+                 (or (nil? from-port) (= from-port f-p))
+                 (or (nil? to-node)   (= to-node   t-n))
+                 (or (nil? to-port)   (= to-port   t-p))))
+          @ARCS ))
+
+(defn add-arc-force [from-node from-port to-node to-port]
+  (cond
+    (and (get-in @NODES [from-node :out-pos from-port])
+         (get-in @NODES [to-node   :in-pos  to-port]))
+    (swap! ARCS conj [from-node from-port to-node to-port])
+
+    (and (get-in @NODES [from-node :in-pos  from-port])
+         (get-in @NODES [to-node   :out-pos to-port]))
+    (swap! ARCS conj [to-node to-port from-node from-port])))
+
+(defn add-arc [from-node from-port to-node to-port]
+  (cond
+    (and (get-in @NODES [from-node :out-pos from-port])
+         (get-in @NODES [to-node   :in-pos  to-port]))
+    (do
+      (doall
+       (for [[f-n f-p t-n t-p] (find-arc {:to-node to-node
+                                          :to-port to-port})]
+         (delete-arc f-n f-p t-n t-p)))
+      (swap! ARCS conj [from-node from-port to-node to-port]))
+
+    (and (get-in @NODES [from-node :in-pos  from-port])
+         (get-in @NODES [to-node   :out-pos to-port]))
+    (do
+      (doall
+       (for [[f-n f-p t-n t-p] (find-arc {:to-node from-node
+                                          :to-port from-port})]
+         (delete-arc f-n f-p t-n t-p)))
+      (swap! ARCS conj [to-node to-port from-node from-port]))))
+
 ;;; Add/Delete Node
 (defn del-node [id]
+  (doall
+   (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
+     (do
+       (println :delete-arc from-node from-port to-node to-port)
+       (delete-arc from-node from-port to-node to-port))))
+  (doall
+   (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
+     (do
+       (println :delete-arc from-node from-port to-node to-port)
+       (delete-arc from-node from-port to-node to-port))))
+  (println :deleted-arcs @ARCS)
   (swap! NODES dissoc id))
 
 (defn add-node [& {:keys [name type x y]}]
@@ -60,7 +134,6 @@
                            :pos-y y
                            :in    in
                            :out   out
-                           :func  func
                            :in-pos  in-pos
                            :out-pos out-pos
                            :color   color})))
@@ -68,39 +141,24 @@
 (defn random-name []
   "name")
 
-;;; Add/Delete Arcs
-(defn add-arc [from-node from-port to-node to-port]
-  (cond
-    (and (get-in @NODES [from-node :out-pos from-port])
-         (get-in @NODES [to-node   :in-pos  to-port]))
-    (swap! ARCS conj [from-node from-port to-node to-port])
-
-    (and (get-in @NODES [from-node :in-pos  from-port])
-         (get-in @NODES [to-node   :out-pos to-port]))
-    (swap! ARCS conj [to-node to-port from-node from-port])))
-
-(defn delete-arc [from-node from-port to-node to-port]
-  (swap! ARCS disj [from-node from-port to-node to-port]))
-
-(defn finde-arc [{:keys [from-node from-port to-node to-port]}]
-  (some @ARCS (fn [[f-n f-p t-n t-p]]
-                (and (or (nil? from-node) (= from-node f-n))
-                     (or (nil? from-port) (= from-port f-p))
-                     (or (nil? to-node)   (= to-node   t-n))
-                     (or (nil? to-port)   (= to-port   t-p))))))
-
 ;;; Nodes
 ;;; Draw nodes
-(defn draw-node-arc [{:keys [x1 y1 x2 y2]}]
-  (fn [{:keys [x1 y1 x2 y2]}]
-    (let [weight (min 5 (* 0.1 (abs (- y2 y1)) (max 2 (abs (- x2 x1)))))]
-      [:path {:d (str "M" x1 " " y1 " "
-                      "C" (+ x1 weight) " " y1 ", "
-                      (- x2 weight) " " y2 ", "
-                      x2 " " y2)
-              :stroke :black
-              :stroke-width 0.1
-              :fill :none}])))
+(defn draw-node-arc [{:keys [x1 y1 x2 y2 info]}]
+  (let [select-arc (fn [info mouse]
+                     (reset! INFO-PAN {:x mouse.clientX
+                                       :y mouse.clientY
+                                       :type :arc
+                                       :info info}))]
+   (fn [{:keys [x1 y1 x2 y2]}]
+     (let [weight (min 6 (* 0.1 (abs (- y2 y1)) (max 8 (abs (- x2 x1)))))]
+       [:path {:d (str "M" x1 " " y1 " "
+                       "C" (+ x1 weight) " " y1 ", "
+                       (- x2 weight) " " y2 ", "
+                       x2 " " y2)
+               :stroke :grey
+               :stroke-width 0.12
+               :fill :none
+               :on-click #(select-arc info %)}]))))
 
 (defn draw-arcs []
   (fn []
@@ -115,7 +173,8 @@
               [dx2 dy2] @(cursor NODES [to-node   :in-pos  to-port])]
           ^{:key (str "arc-" from-node from-port to-node to-port)}
           [draw-node-arc {:x1 (+ x1 dx1) :y1 (+ y1 dy1)
-                          :x2 (+ x2 dx2) :y2 (+ y2 dy2)}])))]))
+                          :x2 (+ x2 dx2) :y2 (+ y2 dy2)
+                          :info [from-node from-port to-node to-port]}])))]))
 (defn draw-node-port [{:keys [id port x y]}]
   (let [select-port (fn [node-id port-id mouse]
                       (condp = mouse.button
@@ -129,7 +188,7 @@
    (fn [{:keys [x y]}]
      [:circle {:cx x
                :cy y
-               :r  0.1
+               :r  0.12
                :stroke :black
                :stroke-width 0.05
                :fill (let [[node-id port-id] @SELECTED-PORT]
@@ -162,14 +221,15 @@
         end-move   (fn []
                      (reset! SELECTED-ID nil))]
     (fn [id {:keys [x y]}]
-      [:g (transform :x x :y y)
+      [:g (conj (transform :x x :y y)
+                {
+                 :on-mouse-down  #(start-move id %)
+                 :on-mouse-move  #(move-node id %)
+                 :on-mouse-leave end-move
+                 :on-mouse-up    end-move})
        [:rect {:width 1
-              :height 1
-              :fill @(cursor NODES [id :color])
-              :on-mouse-down  #(start-move id %)
-              :on-mouse-move  #(move-node id %)
-              :on-mouse-leave end-move
-              :on-mouse-up    end-move}]])))
+               :height 1
+               :fill @(cursor NODES [id :color])}]])))
 
 (defn draw-node [id node]
   (fn []
@@ -212,6 +272,7 @@
                               (max 10 (min 100 (+ (* 0.05 mouse.deltaY) @SCALE)))))
           start-artboard   (fn [mouse]
                              (.stopPropagation mouse)
+                             (reset! SELECTED-PORT nil)
                              (condp = mouse.button
                                0 (do
                                    (reset! INFO-PAN nil)
@@ -298,7 +359,10 @@
                            params
                            (assoc @params arg (-> input .-target .-value))))
           update-name (fn [input]
-                        #(reset! name-f (-> input .-target .-value)))]
+                        #(reset! name-f (-> input .-target .-value)))
+          delete-node (fn [node]
+                        (reset! INFO-PAN nil)
+                        (del-node node))]
      (fn []
        (let [{:keys [param color name]} @(cursor NODES [info])]
          (reset! name-f name)
@@ -331,18 +395,31 @@
                                          :padding "2px"
                                          :margin "0"}
                                  :on-change update-param}]])
-          [:button.info-button {:width "80%"}
+          [:button.info-button {:width "80%"
+                                :on-click #(delete-node info)}
            "delete node"]])))))
+(defn draw-arc-pan [info]
+  (let [delete (fn [[from-node from-port to-node to-port]]
+                 (reset! INFO-PAN nil)
+                 (delete-arc from-node from-port to-node to-port))]
+    (fn [info]
+      [:div
+       [:div.info-title {:style {:background :grey
+                                 :padding "3px"}}
+        ]
+       [:button.info-button {:width "80%"
+                             :on-click #(delete info)}
+        "delete arc"]])))
 
 (defn draw-info-pan []
   (let [width  150
         height 200
         rect   [:rect {:width  width
-                   :height height
-                   :fill   :white
-                   :fill-opacity 0.5
-                   :stroke :black
-                   :stroke-width 2}]]
+                       :height height
+                       :fill   :white
+                       :fill-opacity 0.5
+                       :stroke :black
+                       :stroke-width 2}]]
     (fn []
       (when-not (nil? @INFO-PAN)
         (let [{:keys [type x y info]} @INFO-PAN]
@@ -358,9 +435,10 @@
                            :margin 0
                            :padding 0}}
              (condp = type
-                :add  [draw-add-pan info]
-                :node [draw-node-pan info]
-                '())]]])))))
+               :add  [draw-add-pan info]
+               :node [draw-node-pan info]
+               :arc  [draw-arc-pan info]
+               nil)]]])))))
 
 (defonce WIDTH (atom js/window.innerWidth))
 (defonce HEIGHT (atom js/window.innerHeight))
