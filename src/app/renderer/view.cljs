@@ -105,12 +105,10 @@
   (doall
    (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
      (do
-       (println :delete-arc from-node from-port to-node to-port)
        (delete-arc from-node from-port to-node to-port))))
   (doall
    (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
      (do
-       (println :delete-arc from-node from-port to-node to-port)
        (delete-arc from-node from-port to-node to-port))))
   (swap! NODES dissoc id))
 
@@ -190,38 +188,50 @@
                          :white))
                :on-mouse-down #(select-port id port %)}])))
 (defn draw-node-body [id {:keys [x y]}]
-  (let [start-move (fn [node mouse]
-                     (condp = mouse.button
-                       0 (do
-                           (reset! INFO-PAN nil)
-                           (reset! SELECTED-ID node))
-                       2 (do
-                           (reset! INFO-PAN {:x mouse.clientX
-                                             :y mouse.clientY
-                                             :type :node
-                                             :info node}))
-                       '()))
-        move-node  (fn [id mouse]
-                     (when (= id @SELECTED-ID)
-                       (reset!
-                        NODES
-                        (-> @NODES
-                            (update-in [id :pos-x]
-                                       #(+ % (/ mouse.movementX @SCALE)))
-                            (update-in [id :pos-y]
-                                       #(+ % (/ mouse.movementY @SCALE)))))))
-        end-move   (fn []
-                     (reset! SELECTED-ID nil))]
-    (fn [id {:keys [x y]}]
-      [:g (conj (transform :x x :y y)
-                {
-                 :on-mouse-down  #(start-move id %)
-                 :on-mouse-move  #(move-node id %)
-                 :on-mouse-leave end-move
-                 :on-mouse-up    end-move})
-       [:rect {:width 1
-               :height 1
-               :fill @(cursor NODES [id :color])}]])))
+  (let [node-moved (atom false)]
+    (let [start-move (fn [node mouse]
+                       (condp = mouse.button
+                         0 (do          ; left click: MOVE NODE
+                             (reset! node-moved false)
+                             (reset! INFO-PAN nil)
+                             (reset! SELECTED-ID node))
+                         2 (do          ; right click: OPEN INFO-PAN
+                             (reset! INFO-PAN {:x mouse.clientX
+                                               :y mouse.clientY
+                                               :type :node
+                                               :info node}))
+                         '()))
+          move-node  (fn [id mouse]
+                       (when (= id @SELECTED-ID)
+                         (reset! node-moved true)
+                         (reset!
+                          NODES
+                          (-> @NODES
+                              (update-in [id :pos-x]
+                                         #(+ % (/ mouse.movementX @SCALE)))
+                              (update-in [id :pos-y]
+                                         #(+ % (/ mouse.movementY @SCALE)))))))
+          end-move   (fn [node mouse]
+                       (reset! SELECTED-ID nil)
+                       (when (and (= mouse.movementX 0)
+                                  (= mouse.movementY 0)
+                                  node
+                                  (not @node-moved))
+                         (reset! INFO-PAN {:x mouse.clientX
+                                           :y mouse.clientY
+                                           :type :node
+                                           :info node})
+                         (reset! node-moved false)))]
+      (fn [id {:keys [x y]}]
+        [:g (conj (transform :x x :y y)
+                  {
+                   :on-mouse-down  #(start-move id %)
+                   :on-mouse-move  #(move-node id %)
+                   :on-mouse-leave #(end-move false %)
+                   :on-mouse-up    #(end-move id %)})
+         [:rect {:width 1
+                 :height 1
+                 :fill @(cursor NODES [id :color])}]]))))
 
 (defn draw-node [id node]
   (fn []
@@ -316,6 +326,44 @@
        ^{:key :draw-nodes} [draw-nodes]])))
 
 ;;; Info pan
+(defn draw-pan-button [attrs]
+  (fn [attrs]
+    [:center.info-button-wrapper {:style {:padding "5px"}}
+     [:button.info-button {:style {:width "100%"}
+                           :on-click (attrs :on-click)}
+      (attrs :label)]]))
+(defn draw-pan-split [attrs]
+  (fn [attrs]
+    [:div.info-split {:style {:padding-top "5px"
+                              :padding-bottom "2px"
+                              :padding-left "5px"
+                              :padding-right "5px"}}
+     [:span.info-split-label (attrs :label)]
+     [:hr.info-split-hr {:style {:margin-top "1px"
+                                 :margin-bottom "0px"}}]]))
+(defn draw-pan-form [attrs]
+  (let [nop #()]
+    (fn [attrs]
+      [:div.info-item {:style {:margin-top "3px"
+                               :margin-left "2px"
+                               :margin-right "2px"}}
+       [:span.info-label {:style {:width "30%"
+                                  :padding "2px"
+                                  :margin "0"
+                                  :margin-right "3px"}}
+        (attrs :label)]
+       [:input.info-input {:style {:width "50%"
+                                   :padding "2px"
+                                   :margin "0"}
+                           :placeholder (or (attrs :placeholder) "")
+                           :value (or (attrs :value) "")
+                           :disabled (boolean (attrs :disabled))
+                           :on-change (or (attrs :on-change) nop)}]])))
+(defn draw-pan-title [attrs]
+  (fn [attrs]
+    [:div.info-title {:style {:background (or (attrs :color) :grey)
+                              :padding "5px"}}
+     (attrs :label)]))
 (defn draw-add-pan [info]
   (let [search (atom "")]
     (let [update-value #(reset! search (-> % .-target .-value))
@@ -329,78 +377,79 @@
                                        :y y})))]
      (fn []
        [:div
-        [:div.info-title {:style {:background "#CCC"
-                                  :padding "3px"}}
-         "Add Node"]
-        [:div.input-field {:style {:padding "3px"}}
-         [:input {:style {:width "60%"}
-                 :value @search
-                 :placeholder "Class"
-                 :on-change update-value}]]
+        [draw-pan-title {:color "#CCC"
+                         :label "Add Node"}]
+        ^{:key :info-pan-form-split} [draw-pan-split {:label "Node Name"}]
+        [draw-pan-form {:label "name"
+                        :placeholder (random-name)
+                        :value @search
+                        :disabled true
+                        :on-change update-value}]
+
+        ^{:key :info-pan-class-split} [draw-pan-split {:label "Classes"}]
         (for [[type _] @CLASS]
           ^{:key (str "i-p-s-" type)}
           [:div.type-select {:style {:padding "3px"}
                              :on-click #(make-new-node type %)}
            (str type)])]))))
 (defn draw-node-pan [info]
-  (let [params (atom {})
-        name-f (atom "")
-        editname? (atom false)]
-    (let [update-param (fn [arg input]
-                         #(reset!
-                           params
-                           (assoc @params arg (-> input .-target .-value))))
-          update-name (fn [input]
-                        #(reset! name-f (-> input .-target .-value)))
+  (let [editname? (atom false)
+        buffer (atom false)]
+    (let [update      (fn [node type arg input]
+                        (swap!
+                         (cursor NODES [node type])
+                         assoc arg
+                         (-> input .-target .-value)))
           delete-node (fn [node]
                         (reset! INFO-PAN nil)
                         (del-node node))]
-     (fn []
-       (let [{:keys [param color name]} @(cursor NODES [info])]
-         (reset! name-f name)
+     (fn [info]
+       (let [{:keys [param in out color name]} @(cursor NODES [info])]
          (reset! editname? false)
-         (reset! params param)
          [:div
-          [:div.info-title {:style {:background color
-                                    :padding "3px"}}
-           (if @editname?
-             [:input.info-input {:value @name-f
-                                 :style {:width "30%"
-                                         :padding "2px"
-                                         :margin "0"
-                                         :margin-right "3px"}
-                                 :on-change update-name}]
-             [:span {:on-click #(println :clicked)}
-              @name-f])]
-          (for [[arg val] param]
-            ^{:key (str "info-p-" arg)}
-            [:div.info-item {:style {:margin-top "3px"
-                                     :margin-left "2px"
-                                     :margin-right "2px"}}
-             [:span.info-label  {:style {:width "30%"
-                                         :padding "2px"
-                                         :margin "0"
-                                         :margin-right "3px"}}
-              arg]
-             [:input.info-input {
-                                 :style {:width "50%"
-                                         :padding "2px"
-                                         :margin "0"}
-                                 :on-change update-param}]])
-          [:button.info-button {:width "80%"
-                                :on-click #(delete-node info)}
-           "delete node"]])))))
+          [draw-pan-title {:color color
+                           :label name}]
+
+          ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
+          (doall
+           (for [[arg val] param]
+             ^{:key (str "info-p-" arg)}
+             [draw-pan-form {:label arg
+                             :placeholder val
+                             :value val
+                             :on-change #(update info :param arg %)}]))
+          ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
+          (doall
+           (for [[arg val] in]
+             ^{:key (str "info-i-" arg)}
+             [draw-pan-form {:label arg
+                             :placeholder val
+                             :value val
+                             :on-change #(update info :in arg %)}]))
+
+          ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
+          (doall
+           (for [[arg val] out]
+             ^{:key (str "info-v-" arg)}
+             [draw-pan-form {:label arg
+                             :disabled true
+                             :value val}]))
+
+          [draw-pan-button {:on-click #(delete-node info)
+                            :label "Delete Node"}]])))))
 (defn draw-arc-pan [info]
-  (let [delete (fn [[from-node from-port to-node to-port]]
+  (let [delete (fn [from-node from-port to-node to-port]
                  (reset! INFO-PAN nil)
                  (delete-arc from-node from-port to-node to-port))]
     (fn [info]
-      [:div
-       [:div.info-title {:style {:background :grey
-                                 :padding "3px"}}]
-       [:button.info-button {:width "80%"
-                             :on-click #(delete info)}
-        "delete arc"]])))
+      (let [[from-node from-port to-node to-port] info]
+        [:div
+         [draw-pan-title {:color :grey
+                          :label (str from-port "->" to-port)}]
+
+         [draw-pan-button {:label "Delete Arc"
+                           :on-click #(delete from-node from-port to-node to-port)
+                           }]]))))
 
 (defn draw-info-pan []
   (let [width  150
@@ -426,9 +475,9 @@
                            :margin 0
                            :padding 0}}
              (condp = type
-               :add  [draw-add-pan info]
-               :node [draw-node-pan info]
-               :arc  [draw-arc-pan info]
+               :add  ^{:key info} [draw-add-pan info]
+               :node ^{:key info} [draw-node-pan info]
+               :arc  ^{:key info} [draw-arc-pan info]
                nil)]]])))))
 
 (defonce WIDTH (atom js/window.innerWidth))

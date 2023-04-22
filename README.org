@@ -60,13 +60,19 @@
 ** Overview
 *** demo
 #+caption: A very simple Demo
-[[img/demo.gif]]
+[[img/demo-4-23.gif]]
 
 目前实现的功能:
 + [x] 绘制节点和边
 + [x] 删除节点和边
-+ [ ] *TODO* 修改节点的值
-  
++ [x] 修改节点的值
+
+使用方法:
++ 画板内可以拖动 (左键点击和拖放) 和缩放 (滚轮上下移动)
++ 弹出菜单:
+  + 在空白处右键单击添加节点
+  + 在节点上 (左键) 单击 (不拖动) 或者右键单击修改节点
+  + 在边上 (左键) 单击修改边
 *** core
 在 =app.renderer.core= 的 Namespace 下,
 描述 =start!= 的逻辑:
@@ -146,31 +152,20 @@
 
   (于是在使用的时候, 通过 =[:g (transform ...) ...]= 这样的形式就可以快速调用属性了)
   
-** Draw Board
-*** Overview
-绘制的整体框架如下:
+*** basic CSS
+一些最简单的 CSS 设置, (目前主要是写在代码里面的样式, 需要改进...)
 
-#+name: stage-1-draw-board
-#+begin_src clojure :noweb yes :tangle no
-  ;;; Info and Data
-  <<stage-1-draw-board-info>>
-
-  ;;; Nodes
-  <<stage-1-draw-node>>
-
-  ;;; Art-board
-  <<stage-1-draw-art-board>>
-
-  (defn draw-board []
-    (let [nodes DRAWED-NODES]
-      (fn []
-        [draw-artboard
-         ^{:key :draw-arcs} [draw-arcs]
-         ^{:key :draw-nodes} [draw-nodes]])))
+#+begin_src css :tangle rescources/public/css/main.css
+  body {
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    font-family: "Helvetica Neue", "Arial", sans-serif;
+  }
 #+end_src
 
-*** Data
-**** info-data
+** Data
+*** info-data
 想要绘制一个编辑画板 (Art-board), 所需要知道的信息:
 
 #+name: stage-1-draw-board-info
@@ -237,7 +232,7 @@
 
 (注: 为了方便区分, 这里将外头定义的变量都使用大写来标识. )
 
-**** data-manipulate
+*** data-manipulate
 以及数据的处理和操作
 
 #+name: stage-1-draw-info-data
@@ -339,12 +334,10 @@
         (doall
          (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
            (do
-             (println :delete-arc from-node from-port to-node to-port)
              (delete-arc from-node from-port to-node to-port))))
         (doall
          (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
            (do
-             (println :delete-arc from-node from-port to-node to-port)
              (delete-arc from-node from-port to-node to-port))))
         (swap! NODES dissoc id))
     #+end_src
@@ -371,7 +364,30 @@
     #+end_src
   + =random-name= 之后会加入自动生成一个随机名字的函数
     +(属于是传统艺能了, 可以看看我计科导作业 [[https://github.com/li-yiyang/CARDs][CARDs]] 的 motto 的生成)+
-  
+
+** Draw Board
+*** Overview
+绘制的整体框架如下:
+
+#+name: stage-1-draw-board
+#+begin_src clojure :noweb yes :tangle no
+  ;;; Info and Data
+  <<stage-1-draw-board-info>>
+
+  ;;; Nodes
+  <<stage-1-draw-node>>
+
+  ;;; Art-board
+  <<stage-1-draw-art-board>>
+
+  (defn draw-board []
+    (let [nodes DRAWED-NODES]
+      (fn []
+        [draw-artboard
+         ^{:key :draw-arcs} [draw-arcs]
+         ^{:key :draw-nodes} [draw-nodes]])))
+#+end_src
+
 *** View
 其中的框架具体内容如下:
 
@@ -528,38 +544,50 @@
   #+name: stage-1-draw-node-body
   #+begin_src clojure :tangle no
     (defn draw-node-body [id {:keys [x y]}]
-      (let [start-move (fn [node mouse]
-                         (condp = mouse.button
-                           0 (do
-                               (reset! INFO-PAN nil)
-                               (reset! SELECTED-ID node))
-                           2 (do
-                               (reset! INFO-PAN {:x mouse.clientX
-                                                 :y mouse.clientY
-                                                 :type :node
-                                                 :info node}))
-                           '()))
-            move-node  (fn [id mouse]
-                         (when (= id @SELECTED-ID)
-                           (reset!
-                            NODES
-                            (-> @NODES
-                                (update-in [id :pos-x]
-                                           #(+ % (/ mouse.movementX @SCALE)))
-                                (update-in [id :pos-y]
-                                           #(+ % (/ mouse.movementY @SCALE)))))))
-            end-move   (fn []
-                         (reset! SELECTED-ID nil))]
-        (fn [id {:keys [x y]}]
-          [:g (conj (transform :x x :y y)
-                    {
-                     :on-mouse-down  #(start-move id %)
-                     :on-mouse-move  #(move-node id %)
-                     :on-mouse-leave end-move
-                     :on-mouse-up    end-move})
-           [:rect {:width 1
-                   :height 1
-                   :fill @(cursor NODES [id :color])}]])))
+      (let [node-moved (atom false)]
+        (let [start-move (fn [node mouse]
+                           (condp = mouse.button
+                             0 (do          ; left click: MOVE NODE
+                                 (reset! node-moved false)
+                                 (reset! INFO-PAN nil)
+                                 (reset! SELECTED-ID node))
+                             2 (do          ; right click: OPEN INFO-PAN
+                                 (reset! INFO-PAN {:x mouse.clientX
+                                                   :y mouse.clientY
+                                                   :type :node
+                                                   :info node}))
+                             '()))
+              move-node  (fn [id mouse]
+                           (when (= id @SELECTED-ID)
+                             (reset! node-moved true)
+                             (reset!
+                              NODES
+                              (-> @NODES
+                                  (update-in [id :pos-x]
+                                             #(+ % (/ mouse.movementX @SCALE)))
+                                  (update-in [id :pos-y]
+                                             #(+ % (/ mouse.movementY @SCALE)))))))
+              end-move   (fn [node mouse]
+                           (reset! SELECTED-ID nil)
+                           (when (and (= mouse.movementX 0)
+                                      (= mouse.movementY 0)
+                                      node
+                                      (not @node-moved))
+                             (reset! INFO-PAN {:x mouse.clientX
+                                               :y mouse.clientY
+                                               :type :node
+                                               :info node})
+                             (reset! node-moved false)))]
+          (fn [id {:keys [x y]}]
+            [:g (conj (transform :x x :y y)
+                      {
+                       :on-mouse-down  #(start-move id %)
+                       :on-mouse-move  #(move-node id %)
+                       :on-mouse-leave #(end-move false %)
+                       :on-mouse-up    #(end-move id %)})
+             [:rect {:width 1
+                     :height 1
+                     :fill @(cursor NODES [id :color])}]]))))
   #+end_src
 + 绘制节点的接口
 
@@ -599,6 +627,7 @@
 
 #+name: stage-1-draw-info-pan
 #+begin_src clojure :noweb yes :tangle no
+  <<stage-1-draw-pan-helper>>
   <<stage-1-draw-add-pan>>
   <<stage-1-draw-node-pan>>
   <<stage-1-draw-arc-pan>>
@@ -627,12 +656,83 @@
                              :margin 0
                              :padding 0}}
                (condp = type
-                 :add  [draw-add-pan info]
-                 :node [draw-node-pan info]
-                 :arc  [draw-arc-pan info]
+                 :add  ^{:key info} [draw-add-pan info]
+                 :node ^{:key info} [draw-node-pan info]
+                 :arc  ^{:key info} [draw-arc-pan info]
                  nil)]]])))))
 #+end_src
++ 为了方便绘制元素, 将一些共同的元素进行打包:
 
+  #+name: stage-1-draw-pan-helper
+  #+begin_src clojure :noweb yes :tangle no
+    <<stage-1-draw-pan-button>>
+    <<stage-1-draw-pan-split>>
+    <<stage-1-draw-pan-form>>
+    <<stage-1-draw-pan-title>>
+  #+end_src
+  + 绘制标题
+
+    #+name: stage-1-draw-pan-title
+    #+begin_src clojure :tangle no
+      (defn draw-pan-title [attrs]
+        (fn [attrs]
+          [:div.info-title {:style {:background (or (attrs :color) :grey)
+                                    :padding "5px"}}
+           (attrs :label)]))
+    #+end_src
+
+    注: 这里缺少一些 CSS 特效...
+    目前的想法是:
+    + 尝试实现一个背景透明
+    + 或者实现字体颜色自动变化
+  + 绘制分割符
+
+    #+name: stage-1-draw-pan-split
+    #+begin_src clojure :tangle no
+      (defn draw-pan-split [attrs]
+        (fn [attrs]
+          [:div.info-split {:style {:padding-top "5px"
+                                    :padding-bottom "2px"
+                                    :padding-left "5px"
+                                    :padding-right "5px"}}
+           [:span.info-split-label (attrs :label)]
+           [:hr.info-split-hr {:style {:margin-top "1px"
+                                       :margin-bottom "0px"}}]]))
+    #+end_src
+  + 绘制表单
+
+    #+name: stage-1-draw-pan-form
+    #+begin_src clojure :tangle no
+      (defn draw-pan-form [attrs]
+        (let [nop #()]
+          (fn [attrs]
+            [:div.info-item {:style {:margin-top "3px"
+                                     :margin-left "2px"
+                                     :margin-right "2px"}}
+             [:span.info-label {:style {:width "30%"
+                                        :padding "2px"
+                                        :margin "0"
+                                        :margin-right "3px"}}
+              (attrs :label)]
+             [:input.info-input {:style {:width "50%"
+                                         :padding "2px"
+                                         :margin "0"}
+                                 :placeholder (or (attrs :placeholder) "")
+                                 :value (or (attrs :value) "")
+                                 :disabled (boolean (attrs :disabled))
+                                 :on-change (or (attrs :on-change) nop)}]])))
+    #+end_src
+  + 绘制按钮
+    
+    #+name: stage-1-draw-pan-button
+    #+begin_src clojure :tangle no
+      (defn draw-pan-button [attrs]
+        (fn [attrs]
+          [:center.info-button-wrapper {:style {:padding "5px"}}
+           [:button.info-button {:style {:width "100%"}
+                                 :on-click (attrs :on-click)}
+            (attrs :label)]]))
+    #+end_src
 + 绘制添加节点的表单
     
   #+name: stage-1-draw-add-pan
@@ -650,14 +750,16 @@
                                            :y y})))]
          (fn []
            [:div
-            [:div.info-title {:style {:background "#CCC"
-                                      :padding "3px"}}
-             "Add Node"]
-            [:div.input-field {:style {:padding "3px"}}
-             [:input {:style {:width "60%"}
-                     :value @search
-                     :placeholder "Class"
-                     :on-change update-value}]]
+            [draw-pan-title {:color "#CCC"
+                             :label "Add Node"}]
+            ^{:key :info-pan-form-split} [draw-pan-split {:label "Node Name"}]
+            [draw-pan-form {:label "name"
+                            :placeholder (random-name)
+                            :value @search
+                            :disabled true
+                            :on-change update-value}]
+
+            ^{:key :info-pan-class-split} [draw-pan-split {:label "Classes"}]
             (for [[type _] @CLASS]
               ^{:key (str "i-p-s-" type)}
               [:div.type-select {:style {:padding "3px"}
@@ -669,69 +771,71 @@
   #+name: stage-1-draw-node-pan
   #+begin_src clojure :tangle no
     (defn draw-node-pan [info]
-      (let [params (atom {})
-            name-f (atom "")
-            editname? (atom false)]
-        (let [update-param (fn [arg input]
-                             #(reset!
-                               params
-                               (assoc @params arg (-> input .-target .-value))))
-              update-name (fn [input]
-                            #(reset! name-f (-> input .-target .-value)))
+      (let [editname? (atom false)
+            buffer (atom false)]
+        (let [update      (fn [node type arg input]
+                            (swap!
+                             (cursor NODES [node type])
+                             assoc arg
+                             (-> input .-target .-value)))
               delete-node (fn [node]
                             (reset! INFO-PAN nil)
                             (del-node node))]
-         (fn []
-           (let [{:keys [param color name]} @(cursor NODES [info])]
-             (reset! name-f name)
+         (fn [info]
+           (let [{:keys [param in out color name]} @(cursor NODES [info])]
              (reset! editname? false)
-             (reset! params param)
              [:div
-              [:div.info-title {:style {:background color
-                                        :padding "3px"}}
-               (if @editname?
-                 [:input.info-input {:value @name-f
-                                     :style {:width "30%"
-                                             :padding "2px"
-                                             :margin "0"
-                                             :margin-right "3px"}
-                                     :on-change update-name}]
-                 [:span {:on-click #(println :clicked)}
-                  @name-f])]
-              (for [[arg val] param]
-                ^{:key (str "info-p-" arg)}
-                [:div.info-item {:style {:margin-top "3px"
-                                         :margin-left "2px"
-                                         :margin-right "2px"}}
-                 [:span.info-label  {:style {:width "30%"
-                                             :padding "2px"
-                                             :margin "0"
-                                             :margin-right "3px"}}
-                  arg]
-                 [:input.info-input {
-                                     :style {:width "50%"
-                                             :padding "2px"
-                                             :margin "0"}
-                                     :on-change update-param}]])
-              [:button.info-button {:width "80%"
-                                    :on-click #(delete-node info)}
-               "delete node"]])))))
+              [draw-pan-title {:color color
+                               :label name}]
+
+              ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
+              (doall
+               (for [[arg val] param]
+                 ^{:key (str "info-p-" arg)}
+                 [draw-pan-form {:label arg
+                                 :placeholder val
+                                 :value val
+                                 :on-change #(update info :param arg %)}]))
+              ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
+              (doall
+               (for [[arg val] in]
+                 ^{:key (str "info-i-" arg)}
+                 [draw-pan-form {:label arg
+                                 :placeholder val
+                                 :value val
+                                 :on-change #(update info :in arg %)}]))
+
+              ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
+              (doall
+               (for [[arg val] out]
+                 ^{:key (str "info-v-" arg)}
+                 [draw-pan-form {:label arg
+                                 :disabled true
+                                 :value val}]))
+
+              [draw-pan-button {:on-click #(delete-node info)
+                                :label "Delete Node"}]])))))
   #+end_src
 + 绘制边表单
 
   #+name: stage-1-draw-arc-pan
   #+begin_src clojure :tangle no
     (defn draw-arc-pan [info]
-      (let [delete (fn [[from-node from-port to-node to-port]]
+      (let [delete (fn [from-node from-port to-node to-port]
                      (reset! INFO-PAN nil)
                      (delete-arc from-node from-port to-node to-port))]
         (fn [info]
-          [:div
-           [:div.info-title {:style {:background :grey
-                                     :padding "3px"}}]
-           [:button.info-button {:width "80%"
-                                 :on-click #(delete info)}
-            "delete arc"]])))
+          (let [[from-node from-port to-node to-port] info]
+            [:div
+             [draw-pan-title {:color :grey
+                              :label (str from-port "->" to-port)}]
+
+             [draw-pan-button {:label "Delete Arc"
+                               :on-click #(delete from-node from-port to-node to-port)
+                               }]]))))
   #+end_src
+* COMMENT Stage 2 - Logic and Evaluate
+** Overview
+
 * COMMENT LocalWords
 #  LocalWords: LocalWords magit svg cljs noweb TODO
