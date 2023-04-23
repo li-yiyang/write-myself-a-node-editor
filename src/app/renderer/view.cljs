@@ -1,6 +1,11 @@
 (ns app.renderer.view
   (:require [reagent.core  :as reagent  :refer [atom cursor]]
-            [re-frame.core :as re-frame :refer [dispatch subscribe]]))
+            [app.fun.randomname :refer [random-name]]))
+
+;;; JS Window Info
+(defonce WIDTH (atom js/window.innerWidth))
+(defonce HEIGHT (atom js/window.innerHeight))
+(defonce SIDE-BAR-WIDTH (atom 200))
 
 ;;; Load svg helper
 (defn transform [& {:keys [x y s]}]
@@ -102,14 +107,15 @@
 ;;; Add/Delete Node
 ;;; Delete Node
 (defn del-node [id]
-  (doall
-   (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
-     (do
-       (delete-arc from-node from-port to-node to-port))))
-  (doall
-   (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
-     (do
-       (delete-arc from-node from-port to-node to-port))))
+  ;; delete in arcs
+  (doseq [[from-node from-port to-node to-port] (find-arc {:from-node id})]
+    (delete-arc from-node from-port to-node to-port))
+
+  ;; delete out arcs
+  (doseq [[from-node from-port to-node to-port] (find-arc {:to-node id})]
+    (delete-arc from-node from-port to-node to-port))
+
+  ;; delete the node
   (swap! NODES dissoc id))
 
 ;;; Add Node
@@ -128,8 +134,20 @@
                            :out-pos out-pos
                            :color   color})))
 
-(defn random-name []
-  "name")
+;;; Node Evaluate
+(defn eval-node [id]
+  (let [class (cursor NODES [id :class])
+        in    (cursor NODES [id :in])
+        param (cursor NODES [id :param])
+        out   (cursor NODES [id :out])]
+    (let [func (cursor CLASS [@class :func])]
+      ;; update-node-input
+      (doseq [[port _] @in]
+        (doseq [[from-node from-port _ _] (find-arc {:to-node id :to-port port})]
+          (swap! in assoc port @(cursor NODES [from-node :out from-port]))))
+
+      ;; eval out
+      (reset! out (@func (conj @in @param))))))
 
 ;;; Nodes
 ;;; Draw nodes
@@ -264,8 +282,7 @@
 ;;; Art-board
 (defn draw-artboard [& nodes]
   ;; local closure variable
-  (let [width     (atom 600)      height    (atom 300)
-        dragging? (atom false)]
+  (let [dragging? (atom false)]
     ;; predefine functions
     (let [resize-artboard  (fn [mouse]
                              (.stopPropagation mouse)
@@ -295,16 +312,16 @@
         [:g
          ;; Mask
          [:mask#art-board-background-mask
-          [:rect {:width  @width
-                  :height @height
+          [:rect {:width  (- @WIDTH @SIDE-BAR-WIDTH (* 3 10))
+                  :height (- @HEIGHT 20)
                   :fill   :white
                   :stroke :black
                   :stroke-width 3}]]
          ;; Artboard
          [:g {:transform "translate(10 10)"}
           ;; background
-          [:rect {:width  @width
-                  :height @height
+          [:rect {:width  (- @WIDTH @SIDE-BAR-WIDTH (* 3 10))
+                  :height (- @HEIGHT 20)
                   :fill   :white
                   :stroke :black
                   :stroke-width 3
@@ -324,6 +341,17 @@
       [draw-artboard
        ^{:key :draw-arcs} [draw-arcs]
        ^{:key :draw-nodes} [draw-nodes]])))
+
+;;; Sidebar
+(defn draw-side-bar []
+  (fn []
+    [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 10)
+                   :y 10)
+     [:rect {:width @SIDE-BAR-WIDTH
+             :height (- @HEIGHT 20)
+             :fill :white
+             :stroke :black
+             :stroke-width 3}]]))
 
 ;;; Info pan
 (defn draw-pan-button [attrs]
@@ -358,6 +386,8 @@
                            :placeholder (or (attrs :placeholder) "")
                            :value (or (attrs :value) "")
                            :disabled (boolean (attrs :disabled))
+                           :on-blur (or (attrs :on-blur) nop)
+                           :on-key-press (or (attrs :on-key-press) nop)
                            :on-change (or (attrs :on-change) nop)}]])))
 (defn draw-pan-title [attrs]
   (fn [attrs]
@@ -365,13 +395,14 @@
                               :padding "5px"}}
      (attrs :label)]))
 (defn draw-add-pan [info]
-  (let [search (atom "")]
-    (let [update-value #(reset! search (-> % .-target .-value))
+  (let [search (atom (random-name))]
+    (let [rand-name-fun #(reset! search (random-name))
+          update-value #(reset! search (-> % .-target .-value))
           make-new-node (fn [type mouse]
                           (let [x (/ (- mouse.clientX @TR-X) @SCALE)
                                 y (/ (- mouse.clientY @TR-Y) @SCALE)]
                             (reset! INFO-PAN nil)
-                            (add-node {:name (random-name)
+                            (add-node {:name @search
                                        :type type
                                        :x x
                                        :y y})))]
@@ -381,9 +412,7 @@
                          :label "Add Node"}]
         ^{:key :info-pan-form-split} [draw-pan-split {:label "Node Name"}]
         [draw-pan-form {:label "name"
-                        :placeholder (random-name)
                         :value @search
-                        :disabled true
                         :on-change update-value}]
 
         ^{:key :info-pan-class-split} [draw-pan-split {:label "Classes"}]
@@ -402,7 +431,11 @@
                          (-> input .-target .-value)))
           delete-node (fn [node]
                         (reset! INFO-PAN nil)
-                        (del-node node))]
+                        (del-node node))
+          enter-press (fn [node key]
+                        (condp = key.charCode
+                          13  (eval-node node)
+                          nil))]
      (fn [info]
        (let [{:keys [param in out color name]} @(cursor NODES [info])]
          (reset! editname? false)
@@ -417,6 +450,8 @@
              [draw-pan-form {:label arg
                              :placeholder val
                              :value val
+                             ; :on-blur #(eval-node info)
+                             :on-key-press #(enter-press info %)
                              :on-change #(update info :param arg %)}]))
           ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
           (doall
@@ -425,6 +460,8 @@
              [draw-pan-form {:label arg
                              :placeholder val
                              :value val
+                             ; :on-blur #(eval-node info)
+                             :on-key-press #(enter-press info %)
                              :on-change #(update info :in arg %)}]))
 
           ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
@@ -444,8 +481,7 @@
     (fn [info]
       (let [[from-node from-port to-node to-port] info]
         [:div
-         [draw-pan-title {:color :grey
-                          :label (str from-port "->" to-port)}]
+         [draw-pan-title {:label (str from-port "->" to-port)}]
 
          [draw-pan-button {:label "Delete Arc"
                            :on-click #(delete from-node from-port to-node to-port)
@@ -480,13 +516,15 @@
                :arc  ^{:key info} [draw-arc-pan info]
                nil)]]])))))
 
-(defonce WIDTH (atom js/window.innerWidth))
-(defonce HEIGHT (atom js/window.innerHeight))
-
 (defn main "Main View." []
-  (fn []
-     [:svg {:width  @WIDTH
-            :height @HEIGHT
-            :style {:background "#CCC"}}
-      [draw-board]
-      [draw-info-pan]]))
+  (let [handler (clj->js (fn []
+                           (reset! WIDTH  (.-innerWidth js/window))
+                           (reset! HEIGHT (.-innerHeight js/window))))]
+    (let [_ (.addEventListener js/window "resize" handler)]
+      (fn []
+        [:svg {:width  @WIDTH
+               :height @HEIGHT
+               :style {:background "#CCC"}}
+         [draw-board]
+         [draw-info-pan]
+         [draw-side-bar]]))))

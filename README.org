@@ -97,44 +97,51 @@
 
 *** view
 在 =app.renderer.view= 的 Namespace 下,
-调用 =reagent=, =re-frame= 的库, 引用:
+调用 =reagent= 的库, 引用:
 + =reagent/atom= 用于使用 =atom= 作为容器存放可记录的数据,
   在被更改的时候会使得 Reagent 刷新页面.
 + =reagent/cursor= 和 =atom= 作用类似,
   用于指向数据库中的信息.
-+ =re-frame/db= 用于引用数据库
-+ =re-frame/dispatch= 用于调用事件
-+ =re-frame/subscribe= 用于注册信息
 
 #+name: stage-1-namespace
 #+begin_src clojure :tangle src/app/renderer/view.cljs
   (ns app.renderer.view
     (:require [reagent.core  :as reagent  :refer [atom cursor]]
-              [re-frame.core :as re-frame :refer [dispatch subscribe]]))
+              [app.fun.randomname :refer [random-name]]))
 #+end_src
 
 ** Main
 #+name: stage-1-main
 #+begin_src clojure :noweb yes :tangle src/app/renderer/view.cljs
+  ;;; JS Window Info
+  (defonce WIDTH (atom js/window.innerWidth))
+  (defonce HEIGHT (atom js/window.innerHeight))
+  (defonce SIDE-BAR-WIDTH (atom 200))
+
   ;;; Load svg helper
   <<stage-1-svg-helper>>
 
   ;;; Function to draw board
   <<stage-1-draw-board>>
 
+  ;;; Sidebar
+  <<stage-1-draw-side-bar>>
+
   ;;; Info pan
   <<stage-1-draw-info-pan>>
 
-  (defonce WIDTH (atom js/window.innerWidth))
-  (defonce HEIGHT (atom js/window.innerHeight))
-
   (defn main "Main View." []
-    (fn []
-       [:svg {:width  @WIDTH
-              :height @HEIGHT
-              :style {:background "#CCC"}}
-        [draw-board]
-        [draw-info-pan]]))
+    (let [handler (clj->js (fn []
+                             (reset! WIDTH  (.-innerWidth js/window))
+                             (reset! HEIGHT (.-innerHeight js/window))))]
+      (let [_ (.addEventListener js/window "resize" handler)]
+        (fn []
+          [:svg {:width  @WIDTH
+                 :height @HEIGHT
+                 :style {:background "#CCC"}}
+           [draw-board]
+           [draw-info-pan]
+           [draw-side-bar]]))))
 #+end_src
 
 *** svg-helper
@@ -242,6 +249,9 @@
 
   ;;; Add/Delete Node
   <<stage-1-node-add-delete>>
+
+  ;;; Node Evaluate
+  <<stage-2-eval-node>>
 #+end_src
 
 + 节点边增加, 删除, 以及查找
@@ -321,9 +331,6 @@
 
     ;;; Add Node
     <<stage-1-add-node>>
-
-    (defn random-name []
-      "name")
   #+end_src
 
   + 节点的删除
@@ -331,14 +338,15 @@
     #+name: stage-1-del-node
     #+begin_src clojure :tangle no
       (defn del-node [id]
-        (doall
-         (for [[from-node from-port to-node to-port] (find-arc {:from-node id})]
-           (do
-             (delete-arc from-node from-port to-node to-port))))
-        (doall
-         (for [[from-node from-port to-node to-port] (find-arc {:to-node id})]
-           (do
-             (delete-arc from-node from-port to-node to-port))))
+        ;; delete in arcs
+        (doseq [[from-node from-port to-node to-port] (find-arc {:from-node id})]
+          (delete-arc from-node from-port to-node to-port))
+
+        ;; delete out arcs
+        (doseq [[from-node from-port to-node to-port] (find-arc {:to-node id})]
+          (delete-arc from-node from-port to-node to-port))
+
+        ;; delete the node
         (swap! NODES dissoc id))
     #+end_src
     + 首先删除所有的出/入边
@@ -365,6 +373,43 @@
   + =random-name= 之后会加入自动生成一个随机名字的函数
     +(属于是传统艺能了, 可以看看我计科导作业 [[https://github.com/li-yiyang/CARDs][CARDs]] 的 motto 的生成)+
 
+    #+begin_html
+    <details><summary></summary>
+    #+end_html
+
+    #+begin_src clojure :tangle src/app/fun/randomname.cljs
+      (ns app.fun.randomname
+        (:require [clojure.string :as string :refer [join]]))
+
+      (def data
+        {:name [:adj :noun]
+         :adj  [["super" "ultra" "pro" "surprising"]]
+         :noun [["node" "point" "port"]]})
+
+      (defn pick-random [vec]
+        (nth vec (.floor js/Math (rand (count vec)))))
+
+      (defn random-name
+        ([] (random-name :name 0))
+        ([terminal depth]
+         (let [read (data terminal)]
+           (if (or (nil? read)
+                   (> depth 10))
+             (str terminal)
+             (join "-" (for [item read]
+                         (cond
+                           (keyword? item) (random-name item (+ 1 depth))
+                           (vector? item)  (random-name (pick-random item) (+ 1 depth))
+                           :else item)))))))
+    #+end_src
+
+    + 之后需要增加更多的 =data=
+    + 不过在生产中可能需要去掉... 做着玩了属于是
+
+    #+begin_html
+    </details>
+    #+end_html
+
 ** Draw Board
 *** Overview
 绘制的整体框架如下:
@@ -388,10 +433,9 @@
          ^{:key :draw-nodes} [draw-nodes]])))
 #+end_src
 
-*** View
 其中的框架具体内容如下:
 
-**** art-board
+*** art-board
 绘制 Art-board (作为主要的入口), 大致逻辑如下:
 + 绘制一个蒙版和背景并将蒙版叠在背景上 =rect=
 + 当背景被拖动的时候, 响应拖动事件和鼠标落下的事件
@@ -401,8 +445,7 @@
 #+begin_src clojure :tangle no
   (defn draw-artboard [& nodes]
     ;; local closure variable
-    (let [width     (atom 600)      height    (atom 300)
-          dragging? (atom false)]
+    (let [dragging? (atom false)]
       ;; predefine functions
       (let [resize-artboard  (fn [mouse]
                                (.stopPropagation mouse)
@@ -432,16 +475,16 @@
           [:g
            ;; Mask
            [:mask#art-board-background-mask
-            [:rect {:width  @width
-                    :height @height
+            [:rect {:width  (- @WIDTH @SIDE-BAR-WIDTH (* 3 10))
+                    :height (- @HEIGHT 20)
                     :fill   :white
                     :stroke :black
                     :stroke-width 3}]]
            ;; Artboard
            [:g {:transform "translate(10 10)"}
             ;; background
-            [:rect {:width  @width
-                    :height @height
+            [:rect {:width  (- @WIDTH @SIDE-BAR-WIDTH (* 3 10))
+                    :height (- @HEIGHT 20)
                     :fill   :white
                     :stroke :black
                     :stroke-width 3
@@ -460,7 +503,7 @@
 (关于为什么提前定义内部使用的函数这是为了防止在之后重新绘制节点的时候,
 这是为了防止每次都需要重新执行并计算函数而浪费性能. ) 
 
-**** draw-node-arc
+*** draw-node-arc
 绘制节点的边  
 + 绘制边的方式为一根 Bessel 曲线
 
@@ -500,7 +543,7 @@
                             :info [from-node from-port to-node to-port]}])))]))
 #+end_src
 
-**** draw-node
+*** draw-node
 绘制节点
 
 + 整体
@@ -622,6 +665,24 @@
                    :on-mouse-down #(select-port id port %)}])))
   #+end_src
   
+** Sidebar
+绘制 Side-bar: 用于表现项目的树状关系, 进行更多的处理等工作.
+
++不过当前什么也没有, 在之后再尝试重新绘制吧+ 
+
+#+name: stage-1-draw-side-bar
+#+begin_src clojure :noweb yes :tangle no
+  (defn draw-side-bar []
+    (fn []
+      [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 10)
+                     :y 10)
+       [:rect {:width @SIDE-BAR-WIDTH
+               :height (- @HEIGHT 20)
+               :fill :white
+               :stroke :black
+               :stroke-width 3}]]))
+#+end_src
+
 ** Info-pan
 绘制 Info-pan: 用于展示节点的信息, 添加或者删除节点等进行交互的工作. 
 
@@ -720,6 +781,8 @@
                                  :placeholder (or (attrs :placeholder) "")
                                  :value (or (attrs :value) "")
                                  :disabled (boolean (attrs :disabled))
+                                 :on-blur (or (attrs :on-blur) nop)
+                                 :on-key-press (or (attrs :on-key-press) nop)
                                  :on-change (or (attrs :on-change) nop)}]])))
     #+end_src
   + 绘制按钮
@@ -738,13 +801,14 @@
   #+name: stage-1-draw-add-pan
   #+begin_src clojure :tangle no
     (defn draw-add-pan [info]
-      (let [search (atom "")]
-        (let [update-value #(reset! search (-> % .-target .-value))
+      (let [search (atom (random-name))]
+        (let [rand-name-fun #(reset! search (random-name))
+              update-value #(reset! search (-> % .-target .-value))
               make-new-node (fn [type mouse]
                               (let [x (/ (- mouse.clientX @TR-X) @SCALE)
                                     y (/ (- mouse.clientY @TR-Y) @SCALE)]
                                 (reset! INFO-PAN nil)
-                                (add-node {:name (random-name)
+                                (add-node {:name @search
                                            :type type
                                            :x x
                                            :y y})))]
@@ -754,9 +818,7 @@
                              :label "Add Node"}]
             ^{:key :info-pan-form-split} [draw-pan-split {:label "Node Name"}]
             [draw-pan-form {:label "name"
-                            :placeholder (random-name)
                             :value @search
-                            :disabled true
                             :on-change update-value}]
 
             ^{:key :info-pan-class-split} [draw-pan-split {:label "Classes"}]
@@ -780,7 +842,11 @@
                              (-> input .-target .-value)))
               delete-node (fn [node]
                             (reset! INFO-PAN nil)
-                            (del-node node))]
+                            (del-node node))
+              enter-press (fn [node key]
+                            (condp = key.charCode
+                              13  (eval-node node)
+                              nil))]
          (fn [info]
            (let [{:keys [param in out color name]} @(cursor NODES [info])]
              (reset! editname? false)
@@ -795,6 +861,8 @@
                  [draw-pan-form {:label arg
                                  :placeholder val
                                  :value val
+                                 ; :on-blur #(eval-node info)
+                                 :on-key-press #(enter-press info %)
                                  :on-change #(update info :param arg %)}]))
               ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
               (doall
@@ -803,6 +871,8 @@
                  [draw-pan-form {:label arg
                                  :placeholder val
                                  :value val
+                                 ; :on-blur #(eval-node info)
+                                 :on-key-press #(enter-press info %)
                                  :on-change #(update info :in arg %)}]))
 
               ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
@@ -827,15 +897,36 @@
         (fn [info]
           (let [[from-node from-port to-node to-port] info]
             [:div
-             [draw-pan-title {:color :grey
-                              :label (str from-port "->" to-port)}]
+             [draw-pan-title {:label (str from-port "->" to-port)}]
 
              [draw-pan-button {:label "Delete Arc"
                                :on-click #(delete from-node from-port to-node to-port)
                                }]]))))
   #+end_src
-* COMMENT Stage 2 - Logic and Evaluate
+* Stage 2 - Logic and Evaluate
 ** Overview
+运算单个节点:
++ 将 =param=, =in= 作为计算环境
+  + =param= 是节点的内置属性
+  + =in= 是节点的外部输入, 在没有输入的时候, 可以手动填充
++ 调用 =CLASS= 的 =func= 在环境中进行计算
++ 将计算后的结果作为 =out= 进行储存
 
+#+name: stage-2-eval-node
+#+begin_src clojure :tangle no
+  (defn eval-node [id]
+    (let [class (cursor NODES [id :class])
+          in    (cursor NODES [id :in])
+          param (cursor NODES [id :param])
+          out   (cursor NODES [id :out])]
+      (let [func (cursor CLASS [@class :func])]
+        ;; update-node-input
+        (doseq [[port _] @in]
+          (doseq [[from-node from-port _ _] (find-arc {:to-node id :to-port port})]
+            (swap! in assoc port @(cursor NODES [from-node :out from-port]))))
+
+        ;; eval out
+        (reset! out (@func (conj @in @param))))))
+#+end_src
 * COMMENT LocalWords
 #  LocalWords: LocalWords magit svg cljs noweb TODO
