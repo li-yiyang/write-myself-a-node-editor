@@ -22,15 +22,16 @@
 (defonce TR-Y (atom 0))                 ; 画板 Y 方向的位移量
 
 (defonce CLASS (atom {                  ; 节点类的信息
-                      :Number {
-                               :class :Number
-                               :param {:num 0}
+                      :Input {
+                               :class :Input
+                               :param {:exp ""}
                                :color :orange
                                :in-pos  {}
                                :out-pos {:val [1 0.5]}
-                               :in    []
+                               :in    {}
                                :out   {:val 0}
-                               :func  (fn [{:keys [num]}] { :val num })
+                               :func  (fn [{:keys [exp]}]
+                                        { :val exp })
                                }
                       :Add    {
                                :class   :Add
@@ -53,7 +54,7 @@
                                :func    (fn [{:keys [a b]}] {:val (- a b)})
                                }
                       :Out    {
-                               :class   :Sub
+                               :class   :Out
                                :param   {}
                                :color   :black
                                :in-pos  {:a [0 0.5]}
@@ -148,6 +149,27 @@
 
       ;; eval out
       (reset! out (@func (conj @in @param))))))
+
+(defonce EVAL-NODE-QUEUE (atom []))
+
+(defn eval-graph-initial []
+  (reset! EVAL-NODE-QUEUE
+          (->> @NODES
+               (filter (fn [[_ {class :class}]] (= class :Input)))
+               (map (fn [[id _]] id)))))
+(defn eval-graph-stepper []
+  (when-not (empty? @EVAL-NODE-QUEUE)
+    (let [[node & rest] @EVAL-NODE-QUEUE]
+      (eval-node node)
+      (reset! EVAL-NODE-QUEUE
+              (concat rest
+                      (map (fn [[_ _ from _]] from)
+                           (find-arc {:from-node node})))))))
+
+(defn eval-graph []
+  (eval-graph-initial)
+  (while (not (empty? @EVAL-NODE-QUEUE))
+    (eval-graph-stepper)))
 
 ;;; Nodes
 ;;; Draw nodes
@@ -342,17 +364,6 @@
        ^{:key :draw-arcs} [draw-arcs]
        ^{:key :draw-nodes} [draw-nodes]])))
 
-;;; Sidebar
-(defn draw-side-bar []
-  (fn []
-    [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 10)
-                   :y 10)
-     [:rect {:width @SIDE-BAR-WIDTH
-             :height (- @HEIGHT 20)
-             :fill :white
-             :stroke :black
-             :stroke-width 3}]]))
-
 ;;; Info pan
 (defn draw-pan-button [attrs]
   (fn [attrs]
@@ -515,6 +526,70 @@
                :node ^{:key info} [draw-node-pan info]
                :arc  ^{:key info} [draw-arc-pan info]
                nil)]]])))))
+
+;;; Sidebar
+(defn draw-sidebox-dbg []
+  (fn []
+    [:g
+     [:foreignObject {:width @SIDE-BAR-WIDTH
+                      :height (- @HEIGHT 20)}
+      [:div
+       [:h1 "Bad DBG"]
+
+       (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
+         ^{:key (str idx "sidebar-" id)} [:li id])]]
+     [:g (transform :x 10 :y (- @HEIGHT 60))
+      ^{:key :sidebox-dbg-eval-graph} [:rect {:width 30
+                                              :height 30
+                                              :fill :green
+                                              :stroke :black
+                                              :stroke-width "2px"
+                                              :on-click eval-graph}]
+      ^{:key :sidebox-dbg-eval-graph-init} [:rect {:width 30
+                                                      :height 30
+                                                      :x 40
+                                                      :fill :yellow
+                                                      :stroke :black
+                                                      :stroke-width "2px"
+                                                      :on-click eval-graph-initial}]
+      ^{:key :sidebox-dbg-eval-graph-step} [:rect {:width 30
+                                                   :height 30
+                                                   :x 80
+                                                   :fill :red
+                                                   :stroke :black
+                                                   :stroke-width "2px"
+                                                   :on-click eval-graph-stepper}]]]))
+
+(defn draw-side-bar []
+  (let [drag? (atom false)]
+    (let [mouse-down #(reset! drag? true)
+          mouse-leave #(reset! drag? false)
+          mouse-move (fn [mouse]
+                       (when @drag?
+                         (if (< @SIDE-BAR-WIDTH 100)
+                           (reset! SIDE-BAR-WIDTH 100)
+                           (swap! SIDE-BAR-WIDTH - mouse.movementX))))]
+      (fn []
+        (let [sidebox [:rect {:width @SIDE-BAR-WIDTH
+                              :height (- @HEIGHT 20)
+                              :fill :white
+                              :stroke :black
+                              :stroke-width 3}]]
+          [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 20)
+                         :y 10)
+           [:rect {:width 10
+                   :height (- @HEIGHT 20)
+                   :fill :transparent
+                   :stroke :none
+                   :on-mouse-down mouse-down
+                   :on-mouse-move mouse-move
+                   :on-mouse-leave mouse-leave
+                   :on-mouse-up mouse-leave}]
+           [:g (transform :x 10 :y 0)
+            [:mask.sidebox-mask sidebox]
+            [:g {:mask "url(#sidebox-mask)"}
+             sidebox
+             [draw-sidebox-dbg]]]])))))
 
 (defn main "Main View." []
   (let [handler (clj->js (fn []

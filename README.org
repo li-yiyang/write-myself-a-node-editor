@@ -124,11 +124,11 @@
   ;;; Function to draw board
   <<stage-1-draw-board>>
 
-  ;;; Sidebar
-  <<stage-1-draw-side-bar>>
-
   ;;; Info pan
   <<stage-1-draw-info-pan>>
+
+  ;;; Sidebar
+  <<stage-1-draw-side-bar>>
 
   (defn main "Main View." []
     (let [handler (clj->js (fn []
@@ -185,15 +185,16 @@
   (defonce TR-Y (atom 0))                 ; 画板 Y 方向的位移量
 
   (defonce CLASS (atom {                  ; 节点类的信息
-                        :Number {
-                                 :class :Number
-                                 :param {:num 0}
+                        :Input {
+                                 :class :Input
+                                 :param {:exp ""}
                                  :color :orange
                                  :in-pos  {}
                                  :out-pos {:val [1 0.5]}
-                                 :in    []
+                                 :in    {}
                                  :out   {:val 0}
-                                 :func  (fn [{:keys [num]}] { :val num })
+                                 :func  (fn [{:keys [exp]}]
+                                          { :val exp })
                                  }
                         :Add    {
                                  :class   :Add
@@ -216,7 +217,7 @@
                                  :func    (fn [{:keys [a b]}] {:val (- a b)})
                                  }
                         :Out    {
-                                 :class   :Sub
+                                 :class   :Out
                                  :param   {}
                                  :color   :black
                                  :in-pos  {:a [0 0.5]}
@@ -668,19 +669,78 @@
 ** Sidebar
 绘制 Side-bar: 用于表现项目的树状关系, 进行更多的处理等工作.
 
-+不过当前什么也没有, 在之后再尝试重新绘制吧+ 
++ 在侧边栏中的功能, 嗯, 目前就用做调试用吧. 
 
 #+name: stage-1-draw-side-bar
 #+begin_src clojure :noweb yes :tangle no
+  <<stage-1-draw-sidebox-dbg>>
+
   (defn draw-side-bar []
+    (let [drag? (atom false)]
+      (let [mouse-down #(reset! drag? true)
+            mouse-leave #(reset! drag? false)
+            mouse-move (fn [mouse]
+                         (when @drag?
+                           (if (< @SIDE-BAR-WIDTH 100)
+                             (reset! SIDE-BAR-WIDTH 100)
+                             (swap! SIDE-BAR-WIDTH - mouse.movementX))))]
+        (fn []
+          (let [sidebox [:rect {:width @SIDE-BAR-WIDTH
+                                :height (- @HEIGHT 20)
+                                :fill :white
+                                :stroke :black
+                                :stroke-width 3}]]
+            [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 20)
+                           :y 10)
+             [:rect {:width 10
+                     :height (- @HEIGHT 20)
+                     :fill :transparent
+                     :stroke :none
+                     :on-mouse-down mouse-down
+                     :on-mouse-move mouse-move
+                     :on-mouse-leave mouse-leave
+                     :on-mouse-up mouse-leave}]
+             [:g (transform :x 10 :y 0)
+              [:mask.sidebox-mask sidebox]
+              [:g {:mask "url(#sidebox-mask)"}
+               sidebox
+               [draw-sidebox-dbg]]]])))))
+#+end_src
+
+*** draw-sidebox-dbg
+#+name: stage-1-draw-sidebox-dbg
+#+begin_src clojure :tangle no
+  (defn draw-sidebox-dbg []
     (fn []
-      [:g (transform :x (- @WIDTH @SIDE-BAR-WIDTH 10)
-                     :y 10)
-       [:rect {:width @SIDE-BAR-WIDTH
-               :height (- @HEIGHT 20)
-               :fill :white
-               :stroke :black
-               :stroke-width 3}]]))
+      [:g
+       [:foreignObject {:width @SIDE-BAR-WIDTH
+                        :height (- @HEIGHT 20)}
+        [:div
+         [:h1 "Bad DBG"]
+
+         (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
+           ^{:key (str idx "sidebar-" id)} [:li id])]]
+       [:g (transform :x 10 :y (- @HEIGHT 60))
+        ^{:key :sidebox-dbg-eval-graph} [:rect {:width 30
+                                                :height 30
+                                                :fill :green
+                                                :stroke :black
+                                                :stroke-width "2px"
+                                                :on-click eval-graph}]
+        ^{:key :sidebox-dbg-eval-graph-init} [:rect {:width 30
+                                                        :height 30
+                                                        :x 40
+                                                        :fill :yellow
+                                                        :stroke :black
+                                                        :stroke-width "2px"
+                                                        :on-click eval-graph-initial}]
+        ^{:key :sidebox-dbg-eval-graph-step} [:rect {:width 30
+                                                     :height 30
+                                                     :x 80
+                                                     :fill :red
+                                                     :stroke :black
+                                                     :stroke-width "2px"
+                                                     :on-click eval-graph-stepper}]]]))
 #+end_src
 
 ** Info-pan
@@ -913,7 +973,7 @@
 + 将计算后的结果作为 =out= 进行储存
 
 #+name: stage-2-eval-node
-#+begin_src clojure :tangle no
+#+begin_src clojure :noweb yes :tangle no
   (defn eval-node [id]
     (let [class (cursor NODES [id :class])
           in    (cursor NODES [id :in])
@@ -927,6 +987,47 @@
 
         ;; eval out
         (reset! out (@func (conj @in @param))))))
+
+  <<stage-2-eval-graph>>
 #+end_src
+
+计算整个图, 不过为了方便分析, 这里将计算整个图的函数拆分成如下的部分:
+
+#+name: stage-2-eval-graph
+#+begin_src clojure :noweb yes :tangle no
+  (defonce EVAL-NODE-QUEUE (atom []))
+
+  <<stage-2-eval-graph-initial>>
+  <<stage-2-eval-graph-stepper>>
+
+  (defn eval-graph []
+    (eval-graph-initial)
+    (while (not (empty? @EVAL-NODE-QUEUE))
+      (eval-graph-stepper)))
+#+end_src
+
++ 启动函数: 将所有的 =Input= 类型的节点放入执行队列 =EVAL-NODE-QUEUE= 中:
+
+  #+name: stage-2-eval-graph-initial
+  #+begin_src clojure :tangle no
+    (defn eval-graph-initial []
+      (reset! EVAL-NODE-QUEUE
+              (->> @NODES
+                   (filter (fn [[_ {class :class}]] (= class :Input)))
+                   (map (fn [[id _]] id)))))
+  #+end_src
++ 单步执行函数: 从 =EVAL-NODE-QUEUE= 中按照先入后出的逻辑取一个节点进行计算
+
+  #+name: stage-2-eval-graph-stepper
+  #+begin_src clojure :tangle no
+    (defn eval-graph-stepper []
+      (when-not (empty? @EVAL-NODE-QUEUE)
+        (let [[node & rest] @EVAL-NODE-QUEUE]
+          (eval-node node)
+          (reset! EVAL-NODE-QUEUE
+                  (concat rest
+                          (map (fn [[_ _ from _]] from)
+                               (find-arc {:from-node node})))))))
+  #+end_src
 * COMMENT LocalWords
-#  LocalWords: LocalWords magit svg cljs noweb TODO
+#  LocalWords: LocalWords magit svg cljs noweb TODO dbg sidebox
