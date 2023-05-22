@@ -1,0 +1,30 @@
+{
+    "name": "write-myself-a-node-editor",
+    "version": "0.0.0",
+    "description": "I want to write myself a node editor in clojurescript. ",
+    "main": "rescources/main.js",
+    "scripts": {
+        "build": "shadow-cljs compile main renderer",
+        "watch": "shadow-cljs watch main renderer",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/li-yiyang/write-myself-a-node-editor.git"
+    },
+    "author": "li",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/li-yiyang/write-myself-a-node-editor/issues"
+    },
+    "homepage": "https://github.com/li-yiyang/write-myself-a-node-editor",
+    "devDependencies": {
+        "electron": "^24.0.0",
+        "electron-devtools-installer": "^3.2.0"
+    },
+    "dependencies": {
+        "react": "^17.0.2",
+        "react-dom": "^17.0.2",
+        "shadow-cljs": "^2.22.9"
+    }
+}

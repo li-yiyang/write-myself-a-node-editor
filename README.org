@@ -81,8 +81,7 @@
   (ns app.renderer.core
     (:require [reagent.dom         :as reagentdom  :refer [render]]
               [app.renderer.view   :as view        :refer [main]]
-              [devtools.core       :as devtools]
-              ))
+              [devtools.core       :as devtools]))
 
   (defn ^:dev/after-load start! "Start Renderer" []
     (enable-console-print!)               ; for dev usage
@@ -106,8 +105,9 @@
 #+name: stage-1-namespace
 #+begin_src clojure :tangle src/app/renderer/view.cljs
   (ns app.renderer.view
-    (:require [reagent.core  :as reagent  :refer [atom cursor]]
-              [app.fun.randomname :refer [random-name]]))
+    (:require [reagent.core        :as reagent     :refer [atom cursor]]
+              [app.fun.randomname                  :refer [random-name]]
+              [app.parser.core     :as parser      :refer [parse]]))
 #+end_src
 
 ** Main
@@ -631,7 +631,11 @@
                        :on-mouse-up    #(end-move id %)})
              [:rect {:width 1
                      :height 1
-                     :fill @(cursor NODES [id :color])}]]))))
+                     :fill @(cursor NODES [id :color])}]
+             [:text {:x 0
+                     :y -0.05
+                     :font-size 0.3}
+              @(cursor NODES [id :name])]]))))
   #+end_src
 + 绘制节点的接口
 
@@ -718,8 +722,9 @@
         [:div
          [:h1 "Bad DBG"]
 
-         (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
-           ^{:key (str idx "sidebar-" id)} [:li id])]]
+         (doall
+          (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
+            ^{:key (str idx "sidebar-" id)} [:li @(cursor NODES [id :name])]))]]
        [:g (transform :x 10 :y (- @HEIGHT 60))
         ^{:key :sidebox-dbg-eval-graph} [:rect {:width 30
                                                 :height 30
@@ -898,14 +903,17 @@
         (let [update      (fn [node type arg input]
                             (swap!
                              (cursor NODES [node type])
-                             assoc arg
+                             #'assoc arg
                              (-> input .-target .-value)))
               delete-node (fn [node]
                             (reset! INFO-PAN nil)
                             (del-node node))
-              enter-press (fn [node key]
+              enter-press (fn [node select arg key]
                             (condp = key.charCode
-                              13  (eval-node node)
+                              13  (do
+                                    (let [val (cursor NODES [node select arg])]
+                                      (reset! val (parse @val)))
+                                    (eval-node node))
                               nil))]
          (fn [info]
            (let [{:keys [param in out color name]} @(cursor NODES [info])]
@@ -922,7 +930,7 @@
                                  :placeholder val
                                  :value val
                                  ; :on-blur #(eval-node info)
-                                 :on-key-press #(enter-press info %)
+                                 :on-key-press #(enter-press info :param arg %)
                                  :on-change #(update info :param arg %)}]))
               ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
               (doall
@@ -932,7 +940,7 @@
                                  :placeholder val
                                  :value val
                                  ; :on-blur #(eval-node info)
-                                 :on-key-press #(enter-press info %)
+                                 :on-key-press #(enter-press info :in arg %)
                                  :on-change #(update info :in arg %)}]))
 
               ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
@@ -964,6 +972,71 @@
                                }]]))))
   #+end_src
 * Stage 2 - Logic and Evaluate
+** Input Parser
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  (ns app.parser.core
+    (:require [instaparse.core :as insta :refer-macros [defparser]]
+              [clojure.string  :as str]))
+#+end_src
+
+将输入经过 Parser 转换为一个 ClojureScript 能够读取的数值类型,
+目前实现的是一个能够处理简单四则运算的功能. 之后需要加入的功能:
++ 符号表示
++ 简单函数
+
+*** 定义语法规则
+简单的语法规则如下所示 (使用 EBNF 来表示):
+
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  ;;; EBNF Rules for Simple Input
+  (def ebnf
+    "EXPR   = SUM;
+     SUM    = MUL (SPLIT ('+' | '-') SPLIT MUL)*;
+     MUL    = POWER (SPLIT ('*' | '/') SPLIT POWER)*;
+     POWER  = VALUE (SPLIT '^' SPLIT VALUE)*;
+     VALUE  = SPLIT NUMBER SPLIT | SPLIT '(' SPLIT EXPR SPLIT ')' SPLIT;
+     SPLIT  = #\"\\s*\";
+     NUMBER = #\"[0-9]+(\\.[0-9]*)?|[0-9]*\\.[0-9]+\";
+  ")
+#+end_src
+
+*** 简单的 Parser 和处理程序
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  ;;; Raw parse
+  (defparser parse-ast ebnf)
+
+  (defn eval-parsed [ast]
+    ;; (println 'eval-parsed ast)
+    (let [arg       (fn [ast-exp] (nth ast-exp 1))
+          reduce-by (fn [ops ast-exp]
+                      (loop [idx 5
+                             val (eval-parsed (arg ast-exp))]
+                        (if (< idx (count ast-exp))
+                          (recur (+ idx 4) ((ops (nth ast-exp (- idx 2))) val (eval-parsed (nth ast-exp idx))))
+                          val)))]
+      (condp = (first ast)
+        :EXPR   (eval-parsed (arg ast))
+        :SUM    (reduce-by {"+" #'+ "-" #'-} ast)
+        :MUL    (reduce-by {"*" #'+ "/" #'/} ast)
+        :POWER  (reduce-by {"^" #'Math/pow}  ast)
+        :VALUE  (if (= (count (rest ast)) 3)
+                  (eval-parsed (nth ast 2))
+                  (eval-parsed (nth ast 4)))
+        :NUMBER (js/Number (arg ast))
+        nil)))
+
+#+end_src
+
+*** 外部调用
+在其他程序中, 引用 =parse= 函数将输入放入即可.
+
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  (defn parse "Parse Input." [input]
+    (-> input
+        (parse-ast)
+        (eval-parsed)))
+#+end_src
+
 ** Overview
 运算单个节点:
 + 将 =param=, =in= 作为计算环境
@@ -1030,4 +1103,4 @@
                                (find-arc {:from-node node})))))))
   #+end_src
 * COMMENT LocalWords
-#  LocalWords: LocalWords magit svg cljs noweb TODO dbg sidebox
+#  LocalWords: LocalWords magit svg cljs noweb TODO dbg sidebox EBNF

@@ -1,6 +1,7 @@
 (ns app.renderer.view
-  (:require [reagent.core  :as reagent  :refer [atom cursor]]
-            [app.fun.randomname :refer [random-name]]))
+  (:require [reagent.core        :as reagent     :refer [atom cursor]]
+            [app.fun.randomname                  :refer [random-name]]
+            [app.parser.core     :as parser      :refer [parse]]))
 
 ;;; JS Window Info
 (defonce WIDTH (atom js/window.innerWidth))
@@ -271,7 +272,11 @@
                    :on-mouse-up    #(end-move id %)})
          [:rect {:width 1
                  :height 1
-                 :fill @(cursor NODES [id :color])}]]))))
+                 :fill @(cursor NODES [id :color])}]
+         [:text {:x 0
+                 :y -0.05
+                 :font-size 0.3}
+          @(cursor NODES [id :name])]]))))
 
 (defn draw-node [id node]
   (fn []
@@ -438,14 +443,17 @@
     (let [update      (fn [node type arg input]
                         (swap!
                          (cursor NODES [node type])
-                         assoc arg
+                         #'assoc arg
                          (-> input .-target .-value)))
           delete-node (fn [node]
                         (reset! INFO-PAN nil)
                         (del-node node))
-          enter-press (fn [node key]
+          enter-press (fn [node select arg key]
                         (condp = key.charCode
-                          13  (eval-node node)
+                          13  (do
+                                (let [val (cursor NODES [node select arg])]
+                                  (reset! val (parse @val)))
+                                (eval-node node))
                           nil))]
      (fn [info]
        (let [{:keys [param in out color name]} @(cursor NODES [info])]
@@ -462,7 +470,7 @@
                              :placeholder val
                              :value val
                              ; :on-blur #(eval-node info)
-                             :on-key-press #(enter-press info %)
+                             :on-key-press #(enter-press info :param arg %)
                              :on-change #(update info :param arg %)}]))
           ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
           (doall
@@ -472,7 +480,7 @@
                              :placeholder val
                              :value val
                              ; :on-blur #(eval-node info)
-                             :on-key-press #(enter-press info %)
+                             :on-key-press #(enter-press info :in arg %)
                              :on-change #(update info :in arg %)}]))
 
           ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
@@ -536,8 +544,9 @@
       [:div
        [:h1 "Bad DBG"]
 
-       (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
-         ^{:key (str idx "sidebar-" id)} [:li id])]]
+       (doall
+        (for [[idx id] (map-indexed vector @EVAL-NODE-QUEUE)]
+          ^{:key (str idx "sidebar-" id)} [:li @(cursor NODES [id :name])]))]]
      [:g (transform :x 10 :y (- @HEIGHT 60))
       ^{:key :sidebox-dbg-eval-graph} [:rect {:width 30
                                               :height 30
