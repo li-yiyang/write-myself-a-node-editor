@@ -1005,6 +1005,10 @@
 + [x] 符号表示
 + [x] 简单函数
 
+一个简单的演示:
+
+[[./img/sym-demo-5-24.gif]]
+  
 其中实现上述功能使用的基础数学符号计算包为 [[https://github.com/mentat-collective/emmy][emmy]],
 为了能够简单运行代码, 使用了 [[https://github.com/babashka/sci][sci]] 库作为 =eval= 的替代品.
 不过目前还有的不足:
