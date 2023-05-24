@@ -103,7 +103,7 @@
   用于指向数据库中的信息.
 
 #+name: stage-1-namespace
-#+begin_src clojure :tangle src/app/renderer/view.cljs
+#+begin_src clojure :noweb yes :tangle src/app/renderer/view.cljs
   (ns app.renderer.view
     (:require [reagent.core        :as reagent     :refer [atom cursor]]
               [app.fun.randomname                  :refer [random-name]]
@@ -175,6 +175,10 @@
 *** info-data
 想要绘制一个编辑画板 (Art-board), 所需要知道的信息:
 
+注: [2023-05-24] 需要重构 =CLASS= 和 =NODES= 的代码,
+以及需要重新写 =eval-node= 的部分的代码,
+使得在计算过程中无用的开销减少. 
+
 #+name: stage-1-draw-board-info
 #+begin_src clojure :noweb yes :tangle no
   (defonce SELECTED-ID (atom nil))        ; 当前选中的节点 ID
@@ -204,7 +208,10 @@
                                  :out-pos {:val [1 0.5]}
                                  :in      {:a 0 :b 0}
                                  :out     {:val 0}
-                                 :func    (fn [{:keys [a b]}] { :val (+ a b) })
+                                 :func    (fn [{:keys [a b]}]
+                                            (println 'Add (str "(" a ") + (" b ")"))
+                                            { :val (parser/calculate
+                                                    (str "(" a ") + (" b ")")) })
                                  }
                         :Sub    {
                                  :class   :Sub
@@ -214,7 +221,9 @@
                                  :out-pos {:val [1 0.5]}
                                  :in      {:a 0 :b 0}
                                  :out     {:val 0}
-                                 :func    (fn [{:keys [a b]}] {:val (- a b)})
+                                 :func    (fn [{:keys [a b]}]
+                                            {:val (parser/calculate
+                                                   (str "(" a ") + (" b ")"))})
                                  }
                         :Out    {
                                  :class   :Out
@@ -898,61 +907,70 @@
   #+name: stage-1-draw-node-pan
   #+begin_src clojure :tangle no
     (defn draw-node-pan [info]
-      (let [editname? (atom false)
-            buffer (atom false)]
-        (let [update      (fn [node type arg input]
-                            (swap!
-                             (cursor NODES [node type])
-                             #'assoc arg
-                             (-> input .-target .-value)))
-              delete-node (fn [node]
-                            (reset! INFO-PAN nil)
-                            (del-node node))
-              enter-press (fn [node select arg key]
-                            (condp = key.charCode
-                              13  (do
-                                    (let [val (cursor NODES [node select arg])]
-                                      (reset! val (parse @val)))
-                                    (eval-node node))
-                              nil))]
-         (fn [info]
-           (let [{:keys [param in out color name]} @(cursor NODES [info])]
-             (reset! editname? false)
-             [:div
-              [draw-pan-title {:color color
-                               :label name}]
+      (let [update      (fn [node type arg input]
+                          (swap!
+                           (cursor NODES [node type])
+                           #'assoc arg
+                           (-> input .-target .-value)))
+            delete-node (fn [node]
+                          (reset! INFO-PAN nil)
+                          (del-node node))
+            enter-press (fn [node select arg key]
+                          (condp = key.charCode
+                            13  (let [val (cursor NODES [node select arg])]
+                                  (when (string? @val) (reset! val (parse @val)))
+                                  (eval-node node))
+                            nil))
+            lose-focus  (fn [node select arg]
+                          (let [val (cursor NODES [node select arg])]
+                            (when (string? @val)
+                              (reset! val (parse @val)))))]
+        (fn [info]
+          (let [{:keys [param in out color name]} @(cursor NODES [info])]
+            [:div
+             ;; Title
+             [draw-pan-title {:color color
+                              :label name}]
 
-              ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
-              (doall
-               (for [[arg val] param]
-                 ^{:key (str "info-p-" arg)}
-                 [draw-pan-form {:label arg
-                                 :placeholder val
-                                 :value val
-                                 ; :on-blur #(eval-node info)
-                                 :on-key-press #(enter-press info :param arg %)
-                                 :on-change #(update info :param arg %)}]))
-              ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
-              (doall
-               (for [[arg val] in]
-                 ^{:key (str "info-i-" arg)}
-                 [draw-pan-form {:label arg
-                                 :placeholder val
-                                 :value val
-                                 ; :on-blur #(eval-node info)
-                                 :on-key-press #(enter-press info :in arg %)
-                                 :on-change #(update info :in arg %)}]))
+             ;; Parameters
+             ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
 
-              ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
-              (doall
-               (for [[arg val] out]
-                 ^{:key (str "info-v-" arg)}
-                 [draw-pan-form {:label arg
-                                 :disabled true
-                                 :value val}]))
+             (doall
+              (for [[arg val] param]
+                ^{:key (str "info-p-" arg)}
+                [draw-pan-form {:label arg
+                                :placeholder val
+                                :value val
+                                :on-blur #(lose-focus info :param arg)
+                                :on-key-press #(enter-press info :param arg %)
+                                :on-change #(update info :param arg %)}]))
 
-              [draw-pan-button {:on-click #(delete-node info)
-                                :label "Delete Node"}]])))))
+             ;; Inputs
+             ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
+
+             (doall
+              (for [[arg val] in]
+                ^{:key (str "info-i-" arg)}
+                [draw-pan-form {:label arg
+                                :placeholder val
+                                :value val
+                                :on-blur #(lose-focus info :in arg)
+                                :on-key-press #(enter-press info :in arg %)
+                                :on-change #(update info :in arg %)}]))
+
+             ;; Results
+             ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
+
+             (doall
+              (for [[arg val] out]
+                ^{:key (str "info-v-" arg)}
+                [draw-pan-form {:label arg
+                                :disabled true
+                                :value val}]))
+
+             ;; Delete Node Button
+             [draw-pan-button {:on-click #(delete-node info)
+                               :label "Delete Node"}]]))))
   #+end_src
 + 绘制边表单
 
@@ -975,69 +993,169 @@
 ** Input Parser
 #+begin_src clojure :tangle src/app/parser/core.cljs
   (ns app.parser.core
-    (:require [instaparse.core :as insta :refer-macros [defparser]]
-              [clojure.string  :as str]))
+    (:require [instaparse.core        :as insta :refer-macros [defparser]]
+              [clojure.string         :as str]
+              [sci.core               :as sci]
+              [emmy.env               :as math]
+              [emmy.expression.render :as exp-render]))
 #+end_src
 
 将输入经过 Parser 转换为一个 ClojureScript 能够读取的数值类型,
 目前实现的是一个能够处理简单四则运算的功能. 之后需要加入的功能:
-+ 符号表示
-+ 简单函数
++ [x] 符号表示
++ [x] 简单函数
+
+其中实现上述功能使用的基础数学符号计算包为 [[https://github.com/mentat-collective/emmy][emmy]],
+为了能够简单运行代码, 使用了 [[https://github.com/babashka/sci][sci]] 库作为 =eval= 的替代品.
+不过目前还有的不足:
++ 输入没有提示, 语法检查没有任何的提示
++ 输入没有安全检查, 可能会输入恶意脚本
++ 输入并不是很智能
 
 *** 定义语法规则
 简单的语法规则如下所示 (使用 EBNF 来表示):
 
 #+begin_src clojure :tangle src/app/parser/core.cljs
   ;;; EBNF Rules for Simple Input
+  ;;; Calculator EBNF
   (def ebnf
-    "EXPR   = SUM;
-     SUM    = MUL (SPLIT ('+' | '-') SPLIT MUL)*;
-     MUL    = POWER (SPLIT ('*' | '/') SPLIT POWER)*;
-     POWER  = VALUE (SPLIT '^' SPLIT VALUE)*;
-     VALUE  = SPLIT NUMBER SPLIT | SPLIT '(' SPLIT EXPR SPLIT ')' SPLIT;
-     SPLIT  = #\"\\s*\";
-     NUMBER = #\"[0-9]+(\\.[0-9]*)?|[0-9]*\\.[0-9]+\";
+    "EXPR     = POWER;
+     POWER    = MUL (SPLIT '^' SPLIT MUL)*;
+     MUL      = SUM (SPLIT ('*' | '/') SPLIT SUM)*;
+     SUM      = CMP (SPLIT ('+' | '-') SPLIT CMP)*;
+     CMP      = VALUE (SPLIT ('<' | '<=' | '=' | '>=' | '>') SPLIT VALUE)*;
+     VALUE    = SPLIT ELEMENT SPLIT | SPLIT '(' SPLIT EXPR SPLIT ')' SPLIT;
+     ELEMENT  = LAMBDA | FUNC | FUNC-F | SYMBOL-V | NUMBER | EXPR;
+     LAMBDA   = ('λ' | 'lambda' | 'fn') '(' SPLIT LIST-V SPLIT ').(' EXPR ')';
+     FUNC     = SYMBOL-F '(' SPLIT ?[LIST-E] SPLIT ')'
+     FUNC-F   = '(' SPLIT EXPR SPLIT ')(' SPLIT ?[LIST-E] SPLIT ')';
+     LIST-V   = SYMBOL (SPLIT ',' SPLIT SYMBOL)*
+     LIST-E   = ELEMENT (SPLIT ',' SPLIT ELEMENT)*
+     SYMBOL-F = SYMBOL;
+     SYMBOL-V = SYMBOL;
+     SYMBOL   = #\"[a-zA-Z][a-zA-Z\\-]*\\??\";
+     SPLIT    = #\"\\s*\";
+     NUMBER   = #\"[0-9]+(\\.[0-9]*)?|[0-9]*\\.[0-9]+\";
   ")
 #+end_src
+
+这个语法规则构建得有够难看的...
 
 *** 简单的 Parser 和处理程序
 #+begin_src clojure :tangle src/app/parser/core.cljs
   ;;; Raw parse
-  (defparser parse-ast ebnf)
+  (defparser parse->ebnf-struct ebnf)
 
-  (defn eval-parsed [ast]
-    ;; (println 'eval-parsed ast)
-    (let [arg       (fn [ast-exp] (nth ast-exp 1))
-          reduce-by (fn [ops ast-exp]
-                      (loop [idx 5
-                             val (eval-parsed (arg ast-exp))]
-                        (if (< idx (count ast-exp))
-                          (recur (+ idx 4) ((ops (nth ast-exp (- idx 2))) val (eval-parsed (nth ast-exp idx))))
+  (defn ebnf-struct->ast [ast & {:keys [unquote] :or {unquote false}}]
+    (let [arg (nth ast 1)
+          args (rest ast)
+          reduce-by (fn [ops content]
+                      (loop [idx 4
+                             val (ebnf-struct->ast arg :unquote unquote)]
+                        (if (< idx (count content))
+                          (recur
+                           (+ idx 4)
+                           (list (ops (nth content (- idx 2)))
+                                 val
+                                 (ebnf-struct->ast (nth content idx) :unquote unquote)))
                           val)))]
       (condp = (first ast)
-        :EXPR   (eval-parsed (arg ast))
-        :SUM    (reduce-by {"+" #'+ "-" #'-} ast)
-        :MUL    (reduce-by {"*" #'+ "/" #'/} ast)
-        :POWER  (reduce-by {"^" #'Math/pow}  ast)
-        :VALUE  (if (= (count (rest ast)) 3)
-                  (eval-parsed (nth ast 2))
-                  (eval-parsed (nth ast 4)))
-        :NUMBER (js/Number (arg ast))
+        :EXPR     (ebnf-struct->ast arg :unquote unquote)
+        :CMP      (reduce-by {"<"  '<
+                              ">"  '>
+                              ">=" '>=
+                              "="  '=
+                              "<=" '<=} args)
+        :SUM      (reduce-by {"+" '+
+                              "-" '-} args)
+        :MUL      (reduce-by {"*" '*
+                              "/" '/} args)
+        :POWER    (reduce-by {"^" 'expt} args)
+        :VALUE    (if (= (count args) 3)
+                    (ebnf-struct->ast (nth args 1) :unquote unquote)
+                    (ebnf-struct->ast (nth args 3) :unquote unquote))
+        :ELEMENT  (ebnf-struct->ast arg :unquote unquote)
+        :NUMBER   (js/Number arg)
+        :SYMBOL   (symbol arg)
+        :LAMBDA   (list 'fn (vec (ebnf-struct->ast (nth args 3) :unquote unquote))
+                        (ebnf-struct->ast (nth args 6) :unquote true))
+        :FUNC     (if (= (count args) 4)
+                    (list (ebnf-struct->ast arg :unquote unquote))
+                    (cons (ebnf-struct->ast arg :unquote unquote)
+                          (ebnf-struct->ast (nth args 2) :unquote unquote)))
+        :FUNC-F   (if (= (count args) 7)
+                    (list (ebnf-struct->ast (nth args 2) :unquote unquote))
+                    (cons (ebnf-struct->ast (nth args 2) :unquote unquote)
+                          (ebnf-struct->ast (nth args 5) :unquote unquote)))
+        :SYMBOL-F (ebnf-struct->ast arg)
+        :SYMBOL-V (if unquote
+                    (ebnf-struct->ast arg :unquote unquote)
+                    (list 'quote (ebnf-struct->ast arg :unquote unquote)))
+        :LIST-E   (map #(ebnf-struct->ast % :unquote unquote)
+                       (map #'first (partition-all 4 args)))
+        :LIST-V   (map #(ebnf-struct->ast % :unquote unquote)
+                       (map #'first (partition-all 4 args)))
         nil)))
-
 #+end_src
+
+*** 计算
+计算环境设置:
+
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  (def math-ctx (let [emmy-ns (sci/create-ns 'clojure.core)
+                      namespace (sci/copy-ns emmy.env emmy-ns)]
+                  (sci/init {:namespaces {'clojure.core namespace}})))
+#+end_src
+
+计算程序主体:
+
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  (defn calculate [input]
+    (let [ast (-> input (parse->ebnf-struct) (ebnf-struct->ast))]
+      (if (= 'bad-input ast)
+        'bad-input
+        (try
+          (sci/eval-form math-ctx ast)
+          (catch js/Error e (println e) 'bad-calculation)))))
+#+end_src
+
+*** 格式化输出
+#+begin_src clojure :tangle src/app/parser/core.cljs
+  (def exp->raw
+    (exp-render/make-infix-renderer   
+     :precedence-map '{<  1
+                       <= 1
+                       =  1
+                       >= 1
+                       >  1
+                       +  2
+                       -  2
+                       ,*  3
+                       /  3
+                       expt 4}
+     :infix? '{+ - * / expt < <= = >= >}
+     :special-handlers {'/ (fn [[num denom :as xs]]
+                             (if (= 1 (count xs))
+                               (str "1 / " num)
+                               (str num " / " denom)))}))
+#+end_src
+
+需要修改的工作:
++ [ ] 对 =lambda= 函数的格式化输出,
+  但是因为原则上目前用户应该不会使用这个,
+  所以暂时先不管了.
 
 *** 外部调用
 在其他程序中, 引用 =parse= 函数将输入放入即可.
 
 #+begin_src clojure :tangle src/app/parser/core.cljs
   (defn parse "Parse Input." [input]
-    (-> input
-        (parse-ast)
-        (eval-parsed)))
+    (try
+      (exp->raw (calculate input))
+      (catch js/Error e (println e) "")))
 #+end_src
 
-** Overview
+** Node Evaluate
 运算单个节点:
 + 将 =param=, =in= 作为计算环境
   + =param= 是节点的内置属性
@@ -1051,7 +1169,8 @@
     (let [class (cursor NODES [id :class])
           in    (cursor NODES [id :in])
           param (cursor NODES [id :param])
-          out   (cursor NODES [id :out])]
+          out   (cursor NODES [id :out])
+          map-h (fn [f kvs] (into {} (map (fn [[k v]] [k (f v)]) kvs)))]
       (let [func (cursor CLASS [@class :func])]
         ;; update-node-input
         (doseq [[port _] @in]
@@ -1059,7 +1178,9 @@
             (swap! in assoc port @(cursor NODES [from-node :out from-port]))))
 
         ;; eval out
-        (reset! out (@func (conj @in @param))))))
+        (reset! out (map-h #'parser/exp->raw
+                           (@func (conj (map-h #'parse @in)
+                                        (map-h #'parse @param))))))))
 
   <<stage-2-eval-graph>>
 #+end_src
@@ -1089,7 +1210,7 @@
                    (filter (fn [[_ {class :class}]] (= class :Input)))
                    (map (fn [[id _]] id)))))
   #+end_src
-+ 单步执行函数: 从 =EVAL-NODE-QUEUE= 中按照先入后出的逻辑取一个节点进行计算
++ 单步执行函数: 从 =EVAL-NODE-QUEUE= 中按照先入先出的逻辑取一个节点进行计算
 
   #+name: stage-2-eval-graph-stepper
   #+begin_src clojure :tangle no
@@ -1102,5 +1223,30 @@
                           (map (fn [[_ _ from _]] from)
                                (find-arc {:from-node node})))))))
   #+end_src
+** File Open and Save
+这里需要一些对 =src/app/main/core.cljs= 进行修改,
+增加如下的代码:
+
+#+begin_src clojure :tangle no
+  ;;; File read and write
+  (defn read-file [path]
+    (.readFileSync fs path "utf8"))
+
+  (defn write-file [path content]
+    (.writeFileSync fs path content))
+
+  ;;; Regist IPC event
+  (.on ipc-main "read-file" (fn [event path]
+                              (let [data (read-file path)]
+                                (.send event "file-data" data))))
+
+  (.on ipc-main "write-file" (fn [event path content]
+                               (write-file path content)
+                               (.send event "file-saved")))
+#+end_src
+
+于是在 =renderer= 进程中, 就可以通过 =ipc-render= 来进行事件调用,
+来将文件进行保存之类的操作:
+
 * COMMENT LocalWords
 #  LocalWords: LocalWords magit svg cljs noweb TODO dbg sidebox EBNF

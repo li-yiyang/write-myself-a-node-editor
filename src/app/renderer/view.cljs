@@ -42,7 +42,10 @@
                                :out-pos {:val [1 0.5]}
                                :in      {:a 0 :b 0}
                                :out     {:val 0}
-                               :func    (fn [{:keys [a b]}] { :val (+ a b) })
+                               :func    (fn [{:keys [a b]}]
+                                          (println 'Add (str "(" a ") + (" b ")"))
+                                          { :val (parser/calculate
+                                                  (str "(" a ") + (" b ")")) })
                                }
                       :Sub    {
                                :class   :Sub
@@ -52,7 +55,9 @@
                                :out-pos {:val [1 0.5]}
                                :in      {:a 0 :b 0}
                                :out     {:val 0}
-                               :func    (fn [{:keys [a b]}] {:val (- a b)})
+                               :func    (fn [{:keys [a b]}]
+                                          {:val (parser/calculate
+                                                 (str "(" a ") + (" b ")"))})
                                }
                       :Out    {
                                :class   :Out
@@ -141,7 +146,8 @@
   (let [class (cursor NODES [id :class])
         in    (cursor NODES [id :in])
         param (cursor NODES [id :param])
-        out   (cursor NODES [id :out])]
+        out   (cursor NODES [id :out])
+        map-h (fn [f kvs] (into {} (map (fn [[k v]] [k (f v)]) kvs)))]
     (let [func (cursor CLASS [@class :func])]
       ;; update-node-input
       (doseq [[port _] @in]
@@ -149,7 +155,9 @@
           (swap! in assoc port @(cursor NODES [from-node :out from-port]))))
 
       ;; eval out
-      (reset! out (@func (conj @in @param))))))
+      (reset! out (map-h #'parser/exp->raw
+                         (@func (conj (map-h #'parse @in)
+                                      (map-h #'parse @param))))))))
 
 (defonce EVAL-NODE-QUEUE (atom []))
 
@@ -438,61 +446,70 @@
                              :on-click #(make-new-node type %)}
            (str type)])]))))
 (defn draw-node-pan [info]
-  (let [editname? (atom false)
-        buffer (atom false)]
-    (let [update      (fn [node type arg input]
-                        (swap!
-                         (cursor NODES [node type])
-                         #'assoc arg
-                         (-> input .-target .-value)))
-          delete-node (fn [node]
-                        (reset! INFO-PAN nil)
-                        (del-node node))
-          enter-press (fn [node select arg key]
-                        (condp = key.charCode
-                          13  (do
-                                (let [val (cursor NODES [node select arg])]
-                                  (reset! val (parse @val)))
-                                (eval-node node))
-                          nil))]
-     (fn [info]
-       (let [{:keys [param in out color name]} @(cursor NODES [info])]
-         (reset! editname? false)
-         [:div
-          [draw-pan-title {:color color
-                           :label name}]
+  (let [update      (fn [node type arg input]
+                      (swap!
+                       (cursor NODES [node type])
+                       #'assoc arg
+                       (-> input .-target .-value)))
+        delete-node (fn [node]
+                      (reset! INFO-PAN nil)
+                      (del-node node))
+        enter-press (fn [node select arg key]
+                      (condp = key.charCode
+                        13  (let [val (cursor NODES [node select arg])]
+                              (when (string? @val) (reset! val (parse @val)))
+                              (eval-node node))
+                        nil))
+        lose-focus  (fn [node select arg]
+                      (let [val (cursor NODES [node select arg])]
+                        (when (string? @val)
+                          (reset! val (parse @val)))))]
+    (fn [info]
+      (let [{:keys [param in out color name]} @(cursor NODES [info])]
+        [:div
+         ;; Title
+         [draw-pan-title {:color color
+                          :label name}]
 
-          ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
-          (doall
-           (for [[arg val] param]
-             ^{:key (str "info-p-" arg)}
-             [draw-pan-form {:label arg
-                             :placeholder val
-                             :value val
-                             ; :on-blur #(eval-node info)
-                             :on-key-press #(enter-press info :param arg %)
-                             :on-change #(update info :param arg %)}]))
-          ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
-          (doall
-           (for [[arg val] in]
-             ^{:key (str "info-i-" arg)}
-             [draw-pan-form {:label arg
-                             :placeholder val
-                             :value val
-                             ; :on-blur #(eval-node info)
-                             :on-key-press #(enter-press info :in arg %)
-                             :on-change #(update info :in arg %)}]))
+         ;; Parameters
+         ^{:key :info-pan-param-split} [draw-pan-split {:label "Parameters"}]
 
-          ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
-          (doall
-           (for [[arg val] out]
-             ^{:key (str "info-v-" arg)}
-             [draw-pan-form {:label arg
-                             :disabled true
-                             :value val}]))
+         (doall
+          (for [[arg val] param]
+            ^{:key (str "info-p-" arg)}
+            [draw-pan-form {:label arg
+                            :placeholder val
+                            :value val
+                            :on-blur #(lose-focus info :param arg)
+                            :on-key-press #(enter-press info :param arg %)
+                            :on-change #(update info :param arg %)}]))
 
-          [draw-pan-button {:on-click #(delete-node info)
-                            :label "Delete Node"}]])))))
+         ;; Inputs
+         ^{:key :info-pan-in-split} [draw-pan-split {:label "Inputs"}]
+
+         (doall
+          (for [[arg val] in]
+            ^{:key (str "info-i-" arg)}
+            [draw-pan-form {:label arg
+                            :placeholder val
+                            :value val
+                            :on-blur #(lose-focus info :in arg)
+                            :on-key-press #(enter-press info :in arg %)
+                            :on-change #(update info :in arg %)}]))
+
+         ;; Results
+         ^{:key :info-pan-val-split} [draw-pan-split {:label "Results"}]
+
+         (doall
+          (for [[arg val] out]
+            ^{:key (str "info-v-" arg)}
+            [draw-pan-form {:label arg
+                            :disabled true
+                            :value val}]))
+
+         ;; Delete Node Button
+         [draw-pan-button {:on-click #(delete-node info)
+                           :label "Delete Node"}]]))))
 (defn draw-arc-pan [info]
   (let [delete (fn [from-node from-port to-node to-port]
                  (reset! INFO-PAN nil)
