@@ -82,7 +82,8 @@
       nil)))
 
 (def math-ctx (let [emmy-ns (sci/create-ns 'clojure.core)
-                    namespace (sci/copy-ns emmy.env emmy-ns)]
+                    namespace (sci/copy-ns emmy.env emmy-ns)
+                    ]
                 (sci/init {:namespaces {'clojure.core namespace}})))
 
 (defn calculate [input]

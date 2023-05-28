@@ -1,7 +1,10 @@
 (ns app.renderer.view
   (:require [reagent.core        :as reagent     :refer [atom cursor]]
             [app.fun.randomname                  :refer [random-name]]
-            [app.parser.core     :as parser      :refer [parse]]))
+            [app.parser.core     :as parser      :refer [parse]]
+
+            [app.nodes.core      :as nodes]
+            ))
 
 ;;; JS Window Info
 (defonce WIDTH (atom js/window.innerWidth))
@@ -32,7 +35,9 @@
                                :in    {}
                                :out   {:val 0}
                                :func  (fn [{:keys [exp]}]
-                                        { :val exp })
+                                        (println (str "simplify(" (parser/exp->raw exp) ")"))
+                                        { :val (parser/calculate
+                                                (str "simplify(" (parser/exp->raw exp) ")")) })
                                }
                       :Add    {
                                :class   :Add
@@ -44,8 +49,9 @@
                                :out     {:val 0}
                                :func    (fn [{:keys [a b]}]
                                           (println 'Add (str "(" a ") + (" b ")"))
+                                          (println (type a) (type b))
                                           { :val (parser/calculate
-                                                  (str "(" a ") + (" b ")")) })
+                                                  (str "simplify((" a ") + (" b "))")) })
                                }
                       :Sub    {
                                :class   :Sub

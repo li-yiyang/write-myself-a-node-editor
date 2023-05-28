@@ -107,7 +107,10 @@
   (ns app.renderer.view
     (:require [reagent.core        :as reagent     :refer [atom cursor]]
               [app.fun.randomname                  :refer [random-name]]
-              [app.parser.core     :as parser      :refer [parse]]))
+              [app.parser.core     :as parser      :refer [parse]]
+            
+              [app.nodes.core      :as nodes]
+              ))
 #+end_src
 
 ** Main
@@ -198,7 +201,9 @@
                                  :in    {}
                                  :out   {:val 0}
                                  :func  (fn [{:keys [exp]}]
-                                          { :val exp })
+                                          (println (str "simplify(" (parser/exp->raw exp) ")"))
+                                          { :val (parser/calculate
+                                                  (str "simplify(" (parser/exp->raw exp) ")")) })
                                  }
                         :Add    {
                                  :class   :Add
@@ -210,8 +215,9 @@
                                  :out     {:val 0}
                                  :func    (fn [{:keys [a b]}]
                                             (println 'Add (str "(" a ") + (" b ")"))
+                                            (println (type a) (type b))
                                             { :val (parser/calculate
-                                                    (str "(" a ") + (" b ")")) })
+                                                    (str "simplify((" a ") + (" b "))")) })
                                  }
                         :Sub    {
                                  :class   :Sub
@@ -1105,9 +1111,10 @@
 *** 计算
 计算环境设置:
 
-#+begin_src clojure :tangle src/app/parser/core.cljs
+#+begin_src clojure :noweb yes :tangle src/app/parser/core.cljs
   (def math-ctx (let [emmy-ns (sci/create-ns 'clojure.core)
-                      namespace (sci/copy-ns emmy.env emmy-ns)]
+                      namespace (sci/copy-ns emmy.env emmy-ns)
+                      ]
                   (sci/init {:namespaces {'clojure.core namespace}})))
 #+end_src
 
@@ -1123,6 +1130,8 @@
           (catch js/Error e (println e) 'bad-calculation)))))
 #+end_src
 
+为了方便计算和输入, 做一些小小的处理:
++ TODO =diff= 函数: 将 =D= 函数做一个小小的包装
 *** 格式化输出
 #+begin_src clojure :tangle src/app/parser/core.cljs
   (def exp->raw
@@ -1227,6 +1236,235 @@
                           (map (fn [[_ _ from _]] from)
                                (find-arc {:from-node node})))))))
   #+end_src
+** Node Logic
+这里为了重构逻辑执行部分, 所以构建如下的代码逻辑结构:
+
+#+begin_src dot :file img/node-logic.svg
+  digraph {
+    rankdir = LR; style = dashed; color = grey; fontname = "Arial";
+    nodesep = 0.25; splines = ortho; 
+    edge [fontname = "Arial", len = 0.1];
+    node [shape=record, rankjustify = l, fontname = "Arial"];
+    subgraph cluster_class {
+      label = "CLASS";
+      classes [label = "<add> :ADD|<sub> :SUB|<more> ..."];
+      class_name [label = "{<key> :class-name | :ADD}"];
+      parameters [label = "{<key> :parameters | { :param-a a-field-type |
+                                                  :param-b b-field-type }}"];
+      in         [label = "{<key> :in | { :in-a a-field-type |
+                                          :in-b b-field-type }}"];
+      out        [label = "{<key> :out | { :out-a a-default-decoder |
+                                           :out-b b-default-decoder }}"]
+      renderer   [label = "{<key> :renderer   | fn-to-render }"];
+      rendered   [label = "{<key> :rendered   | { :in-pos |
+                                                  :out-pos |
+                                                  :body }}"];
+      logic      [label = "{<key> :logic      | logic-of-node }"];
+
+      classes -> {
+        class_name:key, parameters:key,
+        in:key, out:key,
+        renderer:key, rendered:key, logic:key };
+      renderer -> rendered [constraint = false, xlabel = "to render", color = orange];
+    }
+    subgraph cluster_nodes {
+      label = "NODES";
+      instant_out [label = "{ :out | store :out\nkey-value pairs }"];
+      instant_in  [label = "{ :in | store :in\nkey-value pairs }"];
+      instant_in_text_field [label = "{ :in-field | store :in input\nkey-value pairs }"];
+      instant_out [label = "{ :out | store :out\nkey-value pairs }"];
+      instant_rendered [label = ":rendered |
+                                 {{:body | rendered body\nin hiccups} |
+                                  {:in-pos | input-port position\nrelative to body} |
+                                  {:out-pos | output-port position\nrelative to body}} |
+                                 rendered key-value pairs"];
+      instant_parameters [label = "{ :parameters | parameters decoded by input }"];
+      instant_parameters_text_field [label = "{:parameters-field | like in-field }"]
+      instant [shape = point];
+    }
+
+    edge [color = orange, dir = back];
+    out -> instant_out [label = "map calculated value\n with decoder"];
+    in  -> instant_in  [label = "map input type\nwith encoder"];
+    instant_in -> instant_in_text_field [label = "input text\nvalue"];
+    parameters -> instant_parameters [label = "map parameters value\n with encoder"];
+    instant_parameters -> instant_parameters_text_field [label = "input text\nvalue"];
+    rendered -> instant_rendered [label = "use default if no renderer"];
+    class_name -> instant [xlabel = "refer by class name"];
+  }
+#+end_src
+
+#+RESULTS:
+[[file:img/node-logic.svg]]
+
+并将其从 =app.renderer.view= Namespace 中分离,
+将计算逻辑和渲染逻辑分开.
+
+#+begin_src clojure :tangle src/app/nodes/core.cljs
+  (ns app.nodes.core
+    (:require [app.parser.core :as parser :refer [calculate]]
+              [app.fun.helpers            :refer [map-map]]
+              [emmy.env        :as math]))
+#+end_src
+
+#+begin_html
+<details><summary>app.fun.helpers</summary>
+#+end_html
+
+#+begin_src clojure :tangle src/app/fun/helpers.cljs
+  (ns app.fun.helpers)
+
+  (defn map-map [f kvs]
+    (into {} (map (fn [[k v]] [k (f v)]) kvs)))
+#+end_src
+
+#+begin_html
+</details>
+#+end_html
+
+*** CLASS
+#+begin_src clojure :noweb yes :tangle src/app/nodes/core.cljs
+  ;;; Core CLASS
+  (def node-class-core-atom (atom {}))
+
+  (defn make-node-class [class-name & {:keys [logic renderer rendered parameters in out]}]
+    {
+     :logic      logic                    ; logic should be a function
+     :class-name class-name               ;
+     :renderer   renderer
+     :rendered   rendered
+     :parameters parameters
+     :in         in
+     :out        out
+     })
+
+  <<make-class-logic>>
+  <<make-class-parameters>>
+  <<make-class-in>>
+  <<make-class-out>>
+  <<make-class-renderer>>
+  <<render-nodes>>
+
+  (defn ^private add-class [name & {:keys [logic renderer parameters in]}]
+    (let [class-logic       (make-class-logic      logic)
+          class-parameters  (make-class-parameters parameters)
+          class-in          (make-class-in         in)
+          class-out         (make-class-out        class-logic)
+          class-renderer    (make-class-renderer   renderer)
+          class-rendered    (render-nodes class-renderer {:in         class-in
+                                                          :out        class-out
+                                                          :parameters class-parameters
+                                                          })]
+      (swap! node-class-core-atom
+             #'assoc (symbol name)
+             (make-node-class name
+                              :logic      class-logic
+                              :renderer   class-renderer
+                              :parameters class-parameters
+                              :in         class-in
+                              :out        class-out))))
+#+end_src
+
+需要最终能够通过如下的形式来进行表示:
+
+#+begin_src clojure :tangle no
+  (add-class "DEMO-CLASS"
+             :logic {:func "1 + 2 * x"
+                     :next :all}
+             :renderer "basic-value"
+             :parameters {:history  {:type "hidden"}
+                          :simplify {:type "boolean"}}
+             :in         {:variable {:default "x"}})
+#+end_src
+
+**** make-class-logic
+#+name: make-class-logic
+#+begin_src clojure :tangle no
+  (defn make-logic-func [func]
+    (cond (string? func) {'result (calculate func)} ; "1 + x"
+          (fn?     func) {'result func}   ; user provide
+          (map?    func) (map-map #'make-logic-func func) ; multi-inputs
+          :else          (calculate "0")  ; fallback
+          ))
+
+  (defn make-logic-next [next keys]
+    (cond (keyword? next) { (symbol next) true } ; 
+          (symbol?  next) { next true }
+          (or (= next :all) (nil? next)) (->> keys
+                                              (map (fn [sym] [sym true]))
+                                              (into {}))
+          (vector?  next) (->> next
+                               (filter #(contains? keys %))
+                               (map (fn [sym] [sym true]))
+                               (into {}))
+          (map? next)     (->> next
+                               (filter (fn [[k -]] (contains? keys k)))
+                               (map (fn [[k v]] [(symbol k)
+                                                 (cond (fn? v) v
+                                                       :else true)]))
+                               (into {})) ; {:out-port (fn [...] ...)}
+          :else (throw "Bad next sepcification.")))
+
+  (defn make-class-logic [{:keys [func next]}]
+    (let [logic-func (make-logic-func func)
+          logic-next (make-logic-next next (keys logic-func))]
+      {:func logic-func
+       :next logic-next}))
+#+end_src
+
+**** make-class-parameters
+#+name: make-class-parameters
+#+begin_src clojure :tangle no
+  (defn make-class-parameters [paras]
+    (cond (symbol?  paras) {paras {:type "expr"}}
+          (keyword? paras) {(symbol paras) {:type "expr"}}
+          (vector?  paras) (into {}       ; [:x [:y {:type ...}]]
+                                 (map #(cond (symbol?  %) [% {:type "expr"}]
+                                             (keyword? %) [(symbol paras) {:type "expr"}]
+                                             (vector?  %) [(symbol (first %)) (last %)]
+                                             :else (throw "Bad Parameters"))
+                                      paras))
+          :else {}))
+#+end_src
+
+**** make-class-in
+#+name: make-class-in
+#+begin_src clojure :tangle no
+  (defn make-class-in [ins]
+    (make-class-parameters ins))
+#+end_src
+
+**** make-class-out
+#+name: make-class-out
+#+begin_src clojure :tangle no
+  (defn make-class-out [logic]
+    (if (= (logic :next) :all)
+      (into {} (map (fn [sym] [sym true]) (keys logic)))
+      ;; to-do....
+      (into {} (map (fn [sym] nil)))))
+#+end_src
+
+**** make-class-renderer
+#+name: make-class-renderer
+#+begin_src clojure :tangle no
+  (defn make-class-renderer [opts]
+    (fn [render-opts] [:rect {:width 1
+                              :height 1}]))
+#+end_src
+
+**** render-nodes
+#+name: render-nodes
+#+begin_src clojure :tangle no
+  (defn render-nodes [renderer opts]
+    (renderer opts))
+#+end_src
+
+*** NODES
+#+begin_src clojure :tangle src/app/nodes/core.cljs
+  (defn make-nodes [])
+#+end_src
+
+
 ** File Open and Save
 这里需要一些对 =src/app/main/core.cljs= 进行修改,
 增加如下的代码:
